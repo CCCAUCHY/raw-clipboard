@@ -42,7 +42,7 @@ gnome-extensions enable raw-clipboard@local
 # 编译 Schema 并打包生成产物 zip
 make pack
 
-# 运行全套 93 项单元与边界压力自动化测试
+# 运行全套单元与边界压力自动化测试
 make test
 ```
 
