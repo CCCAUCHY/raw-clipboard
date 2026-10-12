@@ -200,14 +200,14 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
         settings.bind('max-size-mb', maxSizeRow, 'value', Gio.SettingsBindFlags.DEFAULT);
         group.add(maxSizeRow);
 
-        // 4. 所有记录容量限制 (512 ~ 4096 MB)
+        // 4. 所有记录容量限制 (50 ~ 4096 MB)
         const maxTotalSizeRow = new Adw.SpinRow({
             title: '所有记录容量限制 (MB)\nTotal Size Limit (MB)',
-            subtitle: '本扩展使用字节级前缀复用式存储，当新的剪贴板历史记录生成时，若存储树总大小超出此限制，则自动移除最早的一项或多项记录，直到存储树总大小低于此限制。\n（范围：512 ~ 4096 MB，默认 1024 MB）\nThis extension uses byte-level prefix-sharing storage. When a new entry is created, if total storage exceeds this limit, the oldest entries are automatically removed until storage is below this limit.\n(Range: 512 ~ 4096 MB, Default: 1024 MB)',
+            subtitle: '本扩展使用字节级前缀复用式存储，当新的剪贴板历史记录生成时，若存储树总大小超出此限制，则自动移除最早的一项或多项记录，直到存储树总大小低于此限制。\n（范围：50 ~ 4096 MB，默认 1024 MB）\nThis extension uses byte-level prefix-sharing storage. When a new entry is created, if total storage exceeds this limit, the oldest entries are automatically removed until storage is below this limit.\n(Range: 50 ~ 4096 MB, Default: 1024 MB)',
             adjustment: new Gtk.Adjustment({
-                lower: 512,
+                lower: 50,
                 upper: 4096,
-                step_increment: 64,
+                step_increment: 50,
                 page_increment: 256,
                 value: settings.get_int('max-total-size-mb'),
             }),
