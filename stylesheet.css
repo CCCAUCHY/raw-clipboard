@@ -67,6 +67,15 @@
     color: rgba(255, 255, 255, 0.45);
 }
 
+/* 复制时间标签 (靠右排列，位于条目正文与删除按钮之间) */
+.raw-clipboard-item-time {
+    font-size: 0.78em;
+    font-weight: normal;
+    color: rgba(255, 255, 255, 0.45);
+    margin-right: 6px;
+    margin-left: 6px;
+}
+
 /* 弹窗底部区域 (高度28px，左侧撤销按键，右侧页码指示器) */
 .raw-clipboard-page-bar {
     height: 28px;

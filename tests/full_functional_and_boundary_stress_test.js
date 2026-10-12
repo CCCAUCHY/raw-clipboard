@@ -198,7 +198,7 @@ globalThis.global = {
 const extModule = await import('../extension.js');
 const RawClipboardExtension = extModule.default;
 const RESTORE_NONCE = extModule.RESTORE_NONCE;
-const { RadixRawTree, RadixNode, findLongestCommonPrefix, makeSliceBytes } = extModule;
+const { RadixRawTree, RadixNode, findLongestCommonPrefix, makeSliceBytes, formatTime } = extModule;
 
 // ============================================================================
 // 2. 测试工具类与框架
@@ -329,9 +329,11 @@ function getExtItem(ext, index) {
     const contentBox = itemBox.get_children()[1];
     const previewLabel = contentBox.get_children()[0];
     const subLabel = contentBox.get_children()[1];
+    const timeLabel = itemBox.get_children().find(c => c.style_class && c.style_class.includes('raw-clipboard-item-time'));
     const res = {
         title: previewLabel.text,
         subtitle: subLabel.text,
+        time: timeLabel ? timeLabel.text : null,
         hasThumbIcon: !!(iconActor.gicon instanceof Gio.Icon),
         iconName: iconActor.icon_name || null,
     };
@@ -638,7 +640,7 @@ await reporter.run('3.1 设定 20MB 上限时，恰好 20MB (20,971,520 字节) 
 
     assert(getExtItemCount(ext) === 1, '恰好 20MB 属于合法上限，必须准入');
     const item = getExtItem(ext, 0);
-    assert(item.title.includes('20.0 MB'), `容量格式化应准确显示 20.0 MB，实际: ${item.title}`);
+    assert((item.subtitle || item.title).includes('20.0 MB'), `容量格式化应准确显示 20.0 MB，实际: ${item.subtitle || item.title}`);
     assert(ext._lastChecksum !== '', '应计算有效校验和');
 
     ext.disable();
@@ -702,7 +704,7 @@ await reporter.run('3.5 容量字符串单位边界阶梯测试 (B, KB, MB 格�
         const src = new MockSelectionSource([`application/x-size-${c.size}`], buf);
         await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src);
         const item = getExtItem(ext, 0);
-        assert(item.title.includes(c.expected), `尺寸 ${c.size} 格式化预期含 ${c.expected}，实际: ${item.title}`);
+        assert((item.subtitle || item.title).includes(c.expected), `尺寸 ${c.size} 格式化预期含 ${c.expected}，实际: ${item.subtitle || item.title}`);
     }
 
     ext.disable();
@@ -3114,6 +3116,113 @@ await reporter.run('12.9 复制时间戳实时记录与重复项目提升队首�
     assert(getExtItemCount(ext) === 2, '队首重复复制历史总数保持为 2');
     assert(ext._getEntry(0).id === itemA.id, '依然为队首条目 A');
     assert(ext._getEntry(0).time >= tHeadDup, '队首重复复制时复制时间戳更新为当前复制时刻');
+
+    ext.disable();
+});
+
+await reporter.run('12.10 复制时间在弹窗中显示与 formatTime 格式化单元测试', async () => {
+    // 1. formatTime 格式化函数边界容错验证
+    assert(formatTime(null) === '', 'null 格式化为空字符串');
+    assert(formatTime(undefined) === '', 'undefined 格式化为空字符串');
+    assert(formatTime(0) === '', '0 格式化为空字符串');
+    assert(formatTime(NaN) === '', 'NaN 格式化为空字符串');
+    assert(formatTime('invalid') === '', '字符串入参格式化为空字符串');
+
+    const now = Date.now();
+    const formattedNow = formatTime(now);
+    assert(/^\d{2}:\d{2}:\d{2}$/.test(formattedNow), `当天时间戳应格式化为 HH:mm:ss，实际: ${formattedNow}`);
+
+    // 跨天时间戳验证 (24小时前)
+    const yesterday = now - 24 * 60 * 60 * 1000;
+    const formattedYesterday = formatTime(yesterday);
+    assert(/^\d{2}-\d{2} \d{2}:\d{2}$/.test(formattedYesterday), `跨天时间戳应格式化为 MM-DD HH:mm，实际: ${formattedYesterday}`);
+
+    // 2. 弹窗 UI 中显示条目复制时间
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    const src1 = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Timed Item 1'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src1);
+
+    const item1 = getExtItem(ext, 0);
+    assert(item1 !== null, '条目 1 入库成功');
+    assert(item1.time !== null && item1.time !== '', '弹窗中必须包含复制时间标签');
+    assert(/^\d{2}:\d{2}:\d{2}$/.test(item1.time), `弹窗中的复制时间格式应为 HH:mm:ss，实际: ${item1.time}`);
+
+    // 3. 复制重复条目时，弹窗中的时间标签即时更新
+    await new Promise(r => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 20, () => { r(); return GLib.SOURCE_REMOVE; }));
+    const src1Dup = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Timed Item 1'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src1Dup);
+
+    const item1Dup = getExtItem(ext, 0);
+    assert(item1Dup.time !== null, '重复条目在弹窗中依然保留复制时间');
+
+    ext.disable();
+});
+
+await reporter.run('12.11 未知类型元数据raw分树与“未知类型1”“未知类型2”不预览展示测试', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 1. 复制第一个未知类型 (application/x-custom-type-alpha)
+    const rawData1 = new Uint8Array([0x01, 0x02, 0x03, 0x04]);
+    const srcAlpha1 = new MockSelectionSource(['application/x-custom-type-alpha'], rawData1);
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcAlpha1);
+
+    assert(getExtItemCount(ext) === 1, '未知类型 Alpha 1 入库成功');
+    const itemAlpha1 = getExtItem(ext, 0);
+    assert(itemAlpha1.title === '未知类型1', `未知类型首个条目标题应为未知类型1，实际: ${itemAlpha1.title}`);
+    assert(itemAlpha1.subtitle === '4 B', `未知类型副标题仅显示大小，实际: ${itemAlpha1.subtitle}`);
+    assert(itemAlpha1.time !== null && itemAlpha1.time !== '', '未知类型条目必须展示复制时间');
+    assert(itemAlpha1.iconName === 'application-x-generic-symbolic', '未知类型使用通用二进制图标');
+
+    // 验证 Radix 前缀树按元数据的 raw 数据分树
+    assert(ext._radixTree.hasRoot('application/x-custom-type-alpha'), 'Radix树为 application/x-custom-type-alpha 分配专属独立根节点');
+
+    // 2. 复制第二个不同的未知类型 (application/x-custom-type-beta)
+    const rawData2 = new Uint8Array([0xAA, 0xBB, 0xCC]);
+    const srcBeta1 = new MockSelectionSource(['application/x-custom-type-beta'], rawData2);
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcBeta1);
+
+    assert(getExtItemCount(ext) === 2, '未知类型 Beta 1 入库成功');
+    const itemBeta1 = getExtItem(ext, 0);
+    assert(itemBeta1.title === '未知类型2', `新的未知类型标题应递增为未知类型2，实际: ${itemBeta1.title}`);
+    assert(itemBeta1.subtitle === '3 B', `未知类型2 副标题显示大小 3 B，实际: ${itemBeta1.subtitle}`);
+    assert(itemBeta1.time !== null, '未知类型2 正常展示复制时间');
+
+    // 验证两棵树彼此独立
+    assert(ext._radixTree.hasRoot('application/x-custom-type-beta'), 'Radix树为 application/x-custom-type-beta 分配独立根节点');
+    assert(ext._radixTree.rootCount >= 2, '两套不同未知类型元数据严格分树隔离');
+
+    // 3. 再次复制已知的第一个未知类型 (application/x-custom-type-alpha) 的新数据（不同内容）
+    const rawData3 = new Uint8Array([0x01, 0x02, 0xEE, 0xFF]);
+    const srcAlpha2 = new MockSelectionSource(['application/x-custom-type-alpha'], rawData3);
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcAlpha2);
+
+    assert(getExtItemCount(ext) === 3, '未知类型 Alpha 2 入库成功');
+    const itemAlpha2 = getExtItem(ext, 0);
+    assert(itemAlpha2.title === '未知类型1', `同类型元数据仍使用相同类型编号未知类型1，实际: ${itemAlpha2.title}`);
+    assert(itemAlpha2.subtitle === '4 B', `大小为 4 B，实际: ${itemAlpha2.subtitle}`);
+
+    // 验证两者进入同一棵前缀树并共享前缀 [0x01, 0x02]
+    const alphaRoot = ext._radixTree.getRoot('application/x-custom-type-alpha');
+    assert(alphaRoot !== null, 'Alpha 树根节点存在');
+    assert(alphaRoot.children.has(0x01), 'Alpha 树共享首字节 0x01 前缀');
+
+    // 4. 重复复制完全相同数据 -> 触发去重与时间更新
+    await new Promise(r => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 15, () => { r(); return GLib.SOURCE_REMOVE; }));
+    const tDup = Date.now();
+    const srcAlpha2Dup = new MockSelectionSource(['application/x-custom-type-alpha'], rawData3);
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcAlpha2Dup);
+
+    assert(getExtItemCount(ext) === 3, '重复复制未知类型不增加总条目数');
+    assert(ext._getEntry(0).time >= tDup, '重复复制未知类型更新复制时间戳');
+
+    // 5. 验证未知类型回灌至系统剪贴板保持 raw 元数据与字节无损
+    const restoredEntry = ext._getEntry(0);
+    ext._restoreEntry(restoredEntry);
+    assert(restoredEntry.mime === 'application/x-custom-type-alpha', '回灌保持原始声明的未知类型元数据');
+    assert(restoredEntry.bytes.get_size() === 4, '回灌保持原始二进制数据大小');
 
     ext.disable();
 });

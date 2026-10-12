@@ -279,9 +279,11 @@ function getExtItem(ext, index) {
     const contentBox = itemBox.get_children()[1];
     const previewLabel = contentBox.get_children()[0];
     const subLabel = contentBox.get_children()[1];
+    const timeLabel = itemBox.get_children().find(c => c.style_class && c.style_class.includes('raw-clipboard-item-time'));
     const res = {
         title: previewLabel.text,
         subtitle: subLabel.text,
+        time: timeLabel ? timeLabel.text : null,
         hasThumbIcon: !!(iconActor.gicon instanceof Gio.Icon),
         iconName: iconActor.icon_name || null,
     };
@@ -380,7 +382,7 @@ await reporter.run('2.1 设定 20MB 上限时，恰好 20MB (20,971,520 字节) 
 
     assert(getExtItemCount(ext) === 1, '恰好 20MB 属于合法上限，必须准入');
     const item = getExtItem(ext, 0);
-    assert(item.title.includes('20.0 MB'), `容量格式化应准确显示 20.0 MB，实际: ${item.title}`);
+    assert((item.subtitle || item.title).includes('20.0 MB'), `容量格式化应准确显示 20.0 MB，实际: ${item.subtitle || item.title}`);
     assert(ext._lastChecksum !== '', '应计算有效校验和');
 
     ext.disable();
@@ -444,7 +446,7 @@ await reporter.run('2.5 容量字符串单位边界阶梯测试 (B, KB, MB 格�
         const src = new MockSelectionSource([`application/x-size-${c.size}`], buf);
         await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src);
         const item = getExtItem(ext, 0);
-        assert(item.title.includes(c.expected), `尺寸 ${c.size} 格式化预期含 ${c.expected}，实际: ${item.title}`);
+        assert((item.subtitle || item.title).includes(c.expected), `尺寸 ${c.size} 格式化预期含 ${c.expected}，实际: ${item.subtitle || item.title}`);
     }
 
     ext.disable();

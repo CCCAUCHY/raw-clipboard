@@ -62,6 +62,22 @@ function shouldUseMotion() {
     return true;
 }
 
+// 格式化记录复制时间 (当天显示 HH:mm:ss，跨天显示 MM-DD HH:mm)
+export function formatTime(timestamp) {
+    if (!timestamp || typeof timestamp !== 'number') return '';
+    const d = new Date(timestamp);
+    if (isNaN(d.getTime())) return '';
+    const pad = n => String(n).padStart(2, '0');
+    const now = new Date();
+    const isSameDay = d.getFullYear() === now.getFullYear() &&
+                      d.getMonth() === now.getMonth() &&
+                      d.getDate() === now.getDate();
+    if (isSameDay) {
+        return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
 const Utf8Decoder = new TextDecoder();
 
 // 核心 MIME 检测规则
@@ -110,7 +126,7 @@ function detectCoreMime(mimeTypes) {
 // 3. 我们只维护有限的类型预览（文本、富文本、文件列表、位图）；
 // 4. 其他未知类型只显示类型本身（mime），不显示预览；
 // 5. 且只有位图能以缩略图形式预览。
-function generatePreview(type, mime, gBytes) {
+function generatePreview(type, mime, gBytes, unknownTypeName = null) {
     const size = gBytes.get_size();
     const sizeStr = size > 1048576 ? `${(size / 1048576).toFixed(1)} MB` :
                     size > 1024 ? `${(size / 1024).toFixed(1)} KB` : `${size} B`;
@@ -265,10 +281,10 @@ function generatePreview(type, mime, gBytes) {
         };
     }
 
-    // 4. 其余未知类型：仅显示类型名称与大小，不生成缩略图
+    // 4. 其余未知类型：严格不解析预览内容，仅显示未知类型编号与数据大小
     return {
-        title: `${mime} (${sizeStr})`,
-        subtitle: mime,
+        title: unknownTypeName || '未知类型',
+        subtitle: sizeStr,
         icon: 'application-x-generic-symbolic',
     };
 }
@@ -376,6 +392,18 @@ export class RadixRawTree {
             this._roots.set(mime, new RadixNode(null, null));
         }
         return this._roots.get(mime);
+    }
+
+    hasRoot(mime) {
+        return this._roots.has(mime);
+    }
+
+    getRoot(mime) {
+        return this._roots.get(mime) || null;
+    }
+
+    get rootCount() {
+        return this._roots.size;
     }
 
     insert(mime, gBytes, entryBuilder) {
@@ -488,6 +516,8 @@ export default class RawClipboardExtension extends Extension {
     #deletedEntries = new Set();
     // 自发回灌回环标识集合（单次消费，用于过滤回灌触发的 owner-changed 事件）
     #activeNonces = new Set();
+    // 未知类型按元数据 raw 格式映射表 (mime -> '未知类型N')
+    #unknownTypes = new Map();
     // 当前在途异步读取专属 Cancellable（用于抢占中断旧源）
     _currentReadCancellable = null;
     // 撤销栈 (LIFO 记录软删除条目)
@@ -552,6 +582,19 @@ export default class RawClipboardExtension extends Extension {
         return this.#radixTree;
     }
 
+    _getUnknownTypeName(mime) {
+        const key = mime || 'unknown';
+        if (!this.#unknownTypes.has(key)) {
+            const nextIdx = this.#unknownTypes.size + 1;
+            this.#unknownTypes.set(key, `未知类型${nextIdx}`);
+        }
+        return this.#unknownTypes.get(key);
+    }
+
+    get unknownTypes() {
+        return new Map(this.#unknownTypes);
+    }
+
     _getEntry(index) {
         return this.#history[index] || null;
     }
@@ -561,6 +604,7 @@ export default class RawClipboardExtension extends Extension {
         this.#history = [];
         this.#radixTree = new RadixRawTree();
         this.#deletedEntries.clear();
+        this.#unknownTypes.clear();
         this._undoStack = [];
         this._currentReadCancellable = null;
         this._selectionOwnerId = -1;
@@ -710,6 +754,7 @@ export default class RawClipboardExtension extends Extension {
         // 7. 清空纯内存历史列表与 Radix 前缀树（引用归零，GC 自动回收全部堆内存）
         this.#history = [];
         this.#radixTree.clear();
+        this.#unknownTypes.clear();
         this.#activeNonces.clear();
         this._isRestoring = false;
         this._settings = null;
@@ -1110,8 +1155,9 @@ export default class RawClipboardExtension extends Extension {
             // 2. 若前缀相同但在某处分叉 -> 自动裂变出公共前缀节点，共享前缀物理内存；
             // 3. 全新独立条目 -> 挂载为新分支，插入队首。
             this._debug(`[RawClipboard] 将数据投递至存储查重内核 (MIME: ${core.mime}, 大小: ${size} 字节)...`);
+            const unknownLabel = (core.type === 'raw') ? this._getUnknownTypeName(core.mime) : null;
             const insertResult = this.#radixTree.insert(core.mime, gBytes, leafNode => {
-                const previewInfo = generatePreview(core.type, core.mime, gBytes);
+                const previewInfo = generatePreview(core.type, core.mime, gBytes, unknownLabel);
                 let cachedThumb = undefined;
                 let assembledBytes = (leafNode.collectPathSegments().length === 1 ? leafNode.bytes : null);
                 let cachedChecksum = null;
@@ -2005,6 +2051,17 @@ export default class RawClipboardExtension extends Extension {
             contentBox.add_child(previewLabel);
             contentBox.add_child(subLabel);
             itemBox.add_child(contentBox);
+
+            // 复制时间展示 (右侧对齐，位于内容与删除按钮之间)
+            const timeLabel = new St.Label({
+                text: formatTime(entry.time),
+                style_class: 'raw-clipboard-item-time',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            if (timeLabel.clutter_text) {
+                timeLabel.clutter_text.use_markup = false;
+            }
+            itemBox.add_child(timeLabel);
 
             // 扁平化垃圾桶删除按钮 (48x48 正方形点击热区，居于条目右侧)
             const deleteIcon = new St.Icon({
