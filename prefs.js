@@ -292,6 +292,10 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
                 subtitle: '当历史超过 8 项时，使用鼠标滚轮上下滚动，或按方向键 ← / →（或 PageUp / PageDown）快速翻页\nWhen history exceeds 8 items, use mouse wheel to scroll, or press Arrow Keys ← / → (or PageUp / PageDown) to flip pages.',
             },
             {
+                title: '复制时间\nCopy Timestamp',
+                subtitle: '每个历史条目右侧均记录并显示复制那一刻的时间（当天显示时分秒，跨天显示月日时分）；若重复复制相同内容，将自动更新其复制时间并提升至队首。\nEach item records and displays its exact copy timestamp on the right (HH:mm:ss for today, MM-DD HH:mm for past days); duplicate copies automatically update their copy timestamp and promote to the top.',
+            },
+            {
                 title: '删除条目与撤销\nDelete and Undo',
                 subtitle: '点击条目右侧的删除按钮，或选中后按 Delete / Backspace 键删除；误删可按 Ctrl+Z 快捷撤销\nClick the delete button on the right or press Delete / Backspace to remove; press Ctrl+Z to undo accidental deletion.',
             },
