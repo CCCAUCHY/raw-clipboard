@@ -3238,42 +3238,53 @@ await reporter.run('12.11 未知类型元数据raw分树与“未知类型1”�
     ext.disable();
 });
 
-await reporter.run('12.12 四种排序方式 (入队顺序/大小/类型/首字母) 与槽位复用零闪烁渲染测试', async () => {
+await reporter.run('12.12 四种排序方式 (记录顺序/大小/类型/首字母) 与槽位复用零闪烁渲染测试', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
     // 1. 准备多类型、多大小、多首字母测试数据
-    // 条目 1: 中文文本 (入队 #1, 大小: 18B, type: text)
+    // 条目 1: 中文文本 (记录 #1, 大小: 18B, type: text)
     const src1 = new MockSelectionSource(['text/plain'], new TextEncoder().encode('中文测试项目'));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src1);
 
-    // 条目 2: 英文 Banana (入队 #2, 大小: 6B, type: text, preview: Banana)
+    // 条目 2: 英文 Banana (记录 #2, 大小: 6B, type: text, preview: Banana)
     const src2 = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Banana'));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src2);
 
-    // 条目 3: 英文 Apple (入队 #3, 大小: 5B, type: text, preview: Apple)
+    // 条目 3: 英文 Apple (记录 #3, 大小: 5B, type: text, preview: Apple)
     const src3 = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Apple'));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src3);
 
-    // 条目 4: HTML 数据 (入队 #4, 大小: 25B, type: html)
+    // 条目 4: HTML 数据 (记录 #4, 大小: 25B, type: html)
     const src4 = new MockSelectionSource(['text/html'], new TextEncoder().encode('<b>Hello HTML world</b>'));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src4);
 
-    // 条目 5: 英文 Cat (入队 #5, 大小: 3B, type: text, preview: Cat)
+    // 条目 5: 英文 Cat (记录 #5, 大小: 3B, type: text, preview: Cat)
     const src5 = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Cat'));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src5);
 
     // 打开弹窗
     ext._openPopup();
-    assert(ext.sortMode === 'queue', '初始排序模式为入队顺序 (queue)');
+    assert(ext.sortMode === 'queue', '初始排序模式为记录顺序 (queue)');
 
-    // 2. 模式 1: 入队顺序 (FIFO/LRU: Cat -> <b>Hello... -> Apple -> Banana -> 中文测试项目)
+    // 验证按钮标签文本
+    const queueBtn = ext._sortButtons.get('queue');
+    const sizeBtn = ext._sortButtons.get('size');
+    const typeBtn = ext._sortButtons.get('type');
+    const initialBtn = ext._sortButtons.get('initial');
+    assert(queueBtn.get_children()[0].text === '记录顺序', 'queue 按钮文本为 记录顺序');
+    assert(sizeBtn.get_children()[0].text === '大小', 'size 按钮文本为 大小');
+    assert(typeBtn.get_children()[0].text === '类型', 'type 按钮文本为 类型');
+    assert(initialBtn.get_children()[0].text === '首字母', 'initial 按钮文本为 首字母');
+    assert(queueBtn.get_children()[0].reactive === false, '按钮标签具有 reactive: false 避免遮挡点击');
+
+    // 2. 模式 1: 记录顺序 (FIFO/LRU: Cat -> <b>Hello... -> Apple -> Banana -> 中文测试项目)
     let visibleTitles = ext._itemActors.map(a => a.get_children()[1].get_children()[0].text);
-    assert(visibleTitles[0] === 'Cat', '队首为最新入队的 Cat');
+    assert(visibleTitles[0] === 'Cat', '队首为最新记录的 Cat');
     assert(visibleTitles[1] === '<b>Hello HTML world</b>', '第2项为 HTML');
     assert(visibleTitles[2] === 'Apple', '第3项为 Apple');
     assert(visibleTitles[3] === 'Banana', '第4项为 Banana');
-    assert(visibleTitles[4] === '中文测试项目', '末项为最早入队的 中文测试项目');
+    assert(visibleTitles[4] === '中文测试项目', '末项为最早记录的 中文测试项目');
 
     // 3. 模式 2: 按大小排序 (size 降序: 25B(HTML) -> 18B(中文) -> 6B(Banana) -> 5B(Apple) -> 3B(Cat))
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Tab, get_state: () => 0 });
@@ -3289,11 +3300,11 @@ await reporter.run('12.12 四种排序方式 (入队顺序/大小/类型/首字�
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Tab, get_state: () => 0 });
     assert(ext.sortMode === 'type', 'Tab 切换到按类型排序 (type)');
     visibleTitles = ext._itemActors.map(a => a.get_children()[1].get_children()[0].text);
-    // 前4项是 text (按原入队顺序相对排列: Cat, Apple, Banana, 中文测试项目)
+    // 前4项是 text (按原记录顺序相对排列: Cat, Apple, Banana, 中文测试项目)
     assert(visibleTitles[0] === 'Cat', 'text 类型优先排在最前');
     assert(visibleTitles[4] === '<b>Hello HTML world</b>', 'html 类型排在 text 之后');
 
-    // 5. 模式 4: 按首字母排序 (仅英文排前面 A-Z，其他非英文排在英文后面按入队顺序排序)
+    // 5. 模式 4: 按首字母排序 (仅英文排前面 A-Z，其他非英文排在英文后面按记录顺序排序)
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Tab, get_state: () => 0 });
     assert(ext.sortMode === 'initial', 'Tab 切换到按首字母排序 (initial)');
     visibleTitles = ext._itemActors.map(a => a.get_children()[1].get_children()[0].text);
@@ -3301,7 +3312,7 @@ await reporter.run('12.12 四种排序方式 (入队顺序/大小/类型/首字�
     assert(visibleTitles[0] === 'Apple', 'A 开头排第1');
     assert(visibleTitles[1] === 'Banana', 'B 开头排第2');
     assert(visibleTitles[2] === 'Cat', 'C 开头排第3');
-    // 非英文字符开头: <b>Hello... (符号<), 中文测试项目 排在英文后面，按原本入队顺序
+    // 非英文字符开头: <b>Hello... (符号<), 中文测试项目 排在英文后面，按原本记录顺序
     assert(visibleTitles[3] === '<b>Hello HTML world</b>', '非英文字符项排在英文后面，保持队列顺序');
     assert(visibleTitles[4] === '中文测试项目', '中文排在最后');
 
@@ -3309,7 +3320,20 @@ await reporter.run('12.12 四种排序方式 (入队顺序/大小/类型/首字�
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Tab, get_state: () => Clutter.ModifierType.SHIFT_MASK });
     assert(ext.sortMode === 'type', 'Shift+Tab 反向切换回类型排序');
 
-    // 7. 槽位复用 (Slot Pool) 零闪烁测试
+    // 7. 鼠标左键点击/按下顶栏排序按钮测试 (验证 button-press-event 与 clicked 支持)
+    const mousePressEvent = { get_button: () => 1 };
+    const stopResult = sizeBtn.emit('button-press-event', mousePressEvent);
+    assert(stopResult === Clutter.EVENT_STOP, '点击排序按钮返回 EVENT_STOP 阻断冒泡');
+    assert(ext.sortMode === 'size', '鼠标点击大小按钮成功切换排序为 size');
+    assert(sizeBtn.style_classes.includes('active'), 'size 按钮处于 active 状态');
+    assert(!typeBtn.style_classes.includes('active'), 'type 按钮移除了 active 状态');
+
+    // 点击“记录顺序”按钮
+    queueBtn.emit('button-press-event', mousePressEvent);
+    assert(ext.sortMode === 'queue', '鼠标点击记录顺序按钮成功切换回 queue');
+    assert(queueBtn.style_classes.includes('active'), 'queue 按钮处于 active 状态');
+
+    // 8. 槽位复用 (Slot Pool) 零闪烁测试
     const slot0Actor = ext._itemSlots[0].itemBox;
     const slot0Icon = ext._itemSlots[0].iconActor;
     // 触发重新渲染

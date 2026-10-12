@@ -293,7 +293,7 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
             },
             {
                 title: '多种排序方式\nMultiple Sort Modes',
-                subtitle: '弹窗顶部提供 4 种排序切换方式（入队顺序、大小、类型、首字母），支持点击或按 Tab 键（Shift+Tab 反向）快捷循环切换；选择首字母排序时，英文条目按 A-Z 优先排列，其他语言排在英文后面按入队顺序排列。\nTop bar provides 4 sorting modes (Queue Order, Size, Type, Initial Letter), supporting click or Tab (Shift+Tab) cycling; Initial letter mode sorts English items (A-Z) first, with other languages following in queue order.',
+                subtitle: '弹窗顶部提供 4 种排序切换方式（记录顺序、大小、类型、首字母），支持点击或按 Tab 键（Shift+Tab 反向）快捷循环切换；选择首字母排序时，英文条目按 A-Z 优先排列，其他语言排在英文后面按记录顺序排列。\nTop bar provides 4 sorting modes (Record Order, Size, Type, Initial Letter), supporting click or Tab (Shift+Tab) cycling; Initial letter mode sorts English items (A-Z) first, with other languages following in record order.',
             },
             {
                 title: '复制时间\nCopy Timestamp',

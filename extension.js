@@ -597,7 +597,7 @@ export default class RawClipboardExtension extends Extension {
                 } else if (!isEngA && isEngB) {
                     return 1;  // 其他语言排在英文后面
                 } else {
-                    // 其他语言排在英文后面按入队顺序排序
+                    // 其他语言排在英文后面按记录顺序排序
                     return orderMap.get(a) - orderMap.get(b);
                 }
             });
@@ -1734,7 +1734,7 @@ export default class RawClipboardExtension extends Extension {
             const { popupWidth, popupHeight, contentHeight, pageBarHeight, sortBarHeight } = this._calculateDesiredDimensions(monitor);
             const contentWidth = popupWidth - 12;
 
-            // 顶部排序栏容器 (4个排序切换按钮：入队顺序、大小、类型、首字母)
+            // 顶部排序栏容器 (4个排序切换按钮：记录顺序、大小、类型、首字母)
             this._sortBar = new St.BoxLayout({
                 style_class: 'raw-clipboard-sort-bar',
                 orientation: Clutter.Orientation.HORIZONTAL,
@@ -1747,7 +1747,7 @@ export default class RawClipboardExtension extends Extension {
 
             this._sortButtons = new Map();
             const sortOptions = [
-                { id: 'queue', label: '入队顺序' },
+                { id: 'queue', label: '记录顺序' },
                 { id: 'size', label: '大小' },
                 { id: 'type', label: '类型' },
                 { id: 'initial', label: '首字母' },
@@ -1757,6 +1757,7 @@ export default class RawClipboardExtension extends Extension {
                 const btnLabel = new St.Label({
                     text: opt.label,
                     style_class: 'raw-clipboard-sort-label',
+                    reactive: false,
                     y_align: Clutter.ActorAlign.CENTER,
                     x_align: Clutter.ActorAlign.CENTER,
                 });
@@ -1772,6 +1773,14 @@ export default class RawClipboardExtension extends Extension {
                     y_align: Clutter.ActorAlign.CENTER,
                     child: btnLabel,
                 });
+                btn.connect('button-press-event', (_actor, event) => {
+                    if (event.get_button() === 1) {
+                        this._setSortMode(opt.id);
+                        return Clutter.EVENT_STOP;
+                    }
+                    return Clutter.EVENT_PROPAGATE;
+                });
+                btn.connect('button-release-event', () => Clutter.EVENT_STOP);
                 btn.connect('clicked', () => {
                     this._setSortMode(opt.id);
                 });
@@ -2417,7 +2426,7 @@ export default class RawClipboardExtension extends Extension {
         const SORT_MODES = ['queue', 'size', 'type', 'initial'];
         const isShift = Boolean(state & Clutter.ModifierType.SHIFT_MASK);
 
-        // Tab / Shift+Tab: 循环切换排序方式 (入队顺序 -> 大小 -> 类型 -> 首字母)
+        // Tab / Shift+Tab: 循环切换排序方式 (记录顺序 -> 大小 -> 类型 -> 首字母)
         if (symbol === Clutter.KEY_Tab || symbol === Clutter.KEY_ISO_Left_Tab) {
             const curIdx = SORT_MODES.indexOf(this._sortMode);
             const nextIdx = (isShift || symbol === Clutter.KEY_ISO_Left_Tab)

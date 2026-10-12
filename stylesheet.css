@@ -9,7 +9,7 @@
     width: 420px;
 }
 
-/* 顶部排序栏 (高度28px，4个排序切换按钮：入队顺序、大小、类型、首字母) */
+/* 顶部排序栏 (高度28px，4个排序切换按钮：记录顺序、大小、类型、首字母) */
 .raw-clipboard-sort-bar {
     height: 28px;
     min-height: 28px;
