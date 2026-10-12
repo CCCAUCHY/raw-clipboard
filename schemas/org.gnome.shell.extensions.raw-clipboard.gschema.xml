@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<schemalist gettext-domain="raw-clipboard">
+  <schema id="org.gnome.shell.extensions.raw-clipboard" path="/org/gnome/shell/extensions/raw-clipboard/">
+    <key name="toggle-shortcut" type="as">
+      <default><![CDATA[['<Super>v']]]></default>
+      <summary>Toggle history shortcut</summary>
+      <description>Keyboard shortcut to open clipboard history at pointer</description>
+    </key>
+    <key name="max-items" type="i">
+      <default>30</default>
+      <range min="5" max="1000"/>
+      <summary>Max history items</summary>
+      <description>Maximum number of clipboard history entries to keep in memory (5 to 1000)</description>
+    </key>
+    <key name="max-size-mb" type="i">
+      <default>50</default>
+      <range min="5" max="1024"/>
+      <summary>Max item size in MB</summary>
+      <description>Maximum allowed size in megabytes for a single clipboard entry (up to 1024 MB)</description>
+    </key>
+    <key name="max-total-size-mb" type="i">
+      <default>1024</default>
+      <range min="50" max="4096"/>
+      <summary>Max total history memory in MB</summary>
+      <description>Maximum total memory in megabytes for all clipboard entries combined (50 to 4096 MB)</description>
+    </key>
+    <key name="max-thumbnail-dimension" type="i">
+      <default>4096</default>
+      <range min="512" max="16384"/>
+      <summary>Max thumbnail image dimension</summary>
+      <description>Maximum width or height in pixels for generating image thumbnails (larger images display a generic icon)</description>
+    </key>
+    <key name="inactivity-timeout-sec" type="i">
+      <default>5</default>
+      <range min="1" max="60"/>
+      <summary>Inactivity timeout in seconds</summary>
+      <description>Maximum wait time in seconds with no incoming data before canceling read to prevent application hangs</description>
+    </key>
+    <key name="overall-timeout-sec" type="i">
+      <default>15</default>
+      <range min="2" max="300"/>
+      <summary>Overall transfer timeout in seconds</summary>
+      <description>Maximum total duration in seconds for reading clipboard data before canceling</description>
+    </key>
+    <key name="enable-logging" type="b">
+      <default>false</default>
+      <summary>Enable logging</summary>
+      <description>Whether to output clipboard capture, eviction, and diagnostic logs to the system journal</description>
+    </key>
+  </schema>
+</schemalist>

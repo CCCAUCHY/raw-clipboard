@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<gresources>
+  <gresource prefix="/org/gnome/shell/ui">
+    <file alias="main.js">mock_main.js</file>
+  </gresource>
+  <gresource prefix="/org/gnome/shell/extensions">
+    <file alias="extension.js">mock_extension.js</file>
+  </gresource>
+</gresources>

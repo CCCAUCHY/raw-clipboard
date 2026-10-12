@@ -1,0 +1,15 @@
+{
+  "uuid": "raw-clipboard@local",
+  "name": "Raw Clipboard",
+  "description": "Ultra-lightweight, memory-only clipboard history preserving raw binary data.",
+  "shell-version": [
+    "51"
+  ],
+  "session-modes": [
+    "user",
+    "unlock-dialog"
+  ],
+  "settings-schema": "org.gnome.shell.extensions.raw-clipboard",
+  "url": "https://github.com/CCCAUCHY/raw-clipboard",
+  "version": 57
+}

@@ -1,0 +1,164 @@
+/* GNOME Shell Native Style - Raw Clipboard */
+
+.raw-clipboard-popup {
+    padding: 6px;
+    background-color: #36363a;
+    border-radius: 20px;
+    border: 1px solid #424247;
+    box-shadow: none;
+    width: 380px;
+}
+
+.raw-clipboard-list {
+    spacing: 2px;
+    width: 368px;
+}
+
+/* GNOME 原生菜单条目规范 (严格固定 48px 高度) */
+.raw-clipboard-item {
+    height: 48px;
+    min-height: 48px;
+    max-height: 48px;
+    padding: 0 0 0 10px;
+    margin: 0;
+    border: none;
+    border-radius: 12px;
+    spacing: 8px;
+    transition-duration: 100ms;
+    background-color: transparent;
+}
+
+.raw-clipboard-item:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+.raw-clipboard-item.selected {
+    background-color: rgba(255, 255, 255, 0.14);
+}
+
+.raw-clipboard-item-icon {
+    icon-size: 20px;
+    margin-right: 6px;
+    color: rgba(255, 255, 255, 0.85);
+}
+
+/* 图片缩略图微衬底 */
+.raw-clipboard-item-thumb {
+    icon-size: 34px;
+    margin-right: 6px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    background-color: rgba(0, 0, 0, 0.25);
+}
+
+.raw-clipboard-item-content {
+    spacing: 2px;
+}
+
+.raw-clipboard-item-preview {
+    font-size: 1em;
+    font-weight: normal;
+    color: #ffffff;
+}
+
+.raw-clipboard-item-sub {
+    font-size: 0.82em;
+    font-weight: normal;
+    color: rgba(255, 255, 255, 0.45);
+}
+
+/* 弹窗底部区域 (高度28px，左侧撤销按键，右侧页码指示器) */
+.raw-clipboard-page-bar {
+    height: 28px;
+    min-height: 28px;
+    max-height: 28px;
+    width: 368px;
+    padding: 0 8px;
+}
+
+/* 底部左下角撤销按钮 (扁平化轻量设计) */
+.raw-clipboard-undo-btn {
+    height: 24px;
+    padding: 0 6px;
+    border-radius: 6px;
+    border: none;
+    background-color: transparent;
+    color: rgba(255, 255, 255, 0.4);
+    transition-duration: 120ms;
+}
+
+.raw-clipboard-undo-btn.active {
+    color: rgba(255, 255, 255, 0.85);
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+.raw-clipboard-undo-btn.active:hover {
+    color: #ffffff;
+    background-color: rgba(255, 255, 255, 0.16);
+}
+
+.raw-clipboard-undo-btn.active:active {
+    background-color: rgba(255, 255, 255, 0.24);
+}
+
+.raw-clipboard-undo-btn.disabled {
+    opacity: 0.35;
+    color: rgba(255, 255, 255, 0.25);
+    background-color: transparent;
+}
+
+.raw-clipboard-undo-box {
+    spacing: 4px;
+}
+
+.raw-clipboard-undo-label {
+    font-size: 0.82em;
+    font-weight: normal;
+}
+
+/* 底部裸露页码指示器 (靠右排列，分母位置恒定，彻底杜绝翻页文字抖动) */
+.raw-clipboard-page-badge {
+    font-size: 0.95em;
+    font-weight: normal;
+    color: rgba(255, 255, 255, 0.55);
+    background-color: transparent;
+    border: none;
+    border-radius: 0;
+    padding: 0;
+    margin: 0;
+    text-align: right;
+}
+
+/* 扁平化垃圾桶删除按钮 (48x48 正方形点击热区，居于条目右侧) */
+.raw-clipboard-delete-btn {
+    min-width: 48px;
+    min-height: 48px;
+    max-width: 48px;
+    max-height: 48px;
+    width: 48px;
+    height: 48px;
+    border-radius: 0 12px 12px 0;
+    padding: 0;
+    margin: 0;
+    border: none;
+    background-color: transparent;
+    color: rgba(255, 255, 255, 0.45);
+    transition-duration: 120ms;
+}
+
+.raw-clipboard-delete-btn:hover {
+    background-color: rgba(235, 75, 75, 0.22);
+    color: #ff6b6b;
+}
+
+.raw-clipboard-delete-btn:active {
+    background-color: rgba(235, 75, 75, 0.45);
+    color: #ffffff;
+}
+
+.raw-clipboard-empty {
+    padding: 18px 16px;
+    color: rgba(255, 255, 255, 0.45);
+    font-size: 1em;
+    text-align: center;
+}

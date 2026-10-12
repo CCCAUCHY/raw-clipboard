@@ -1,0 +1,12 @@
+# Sensitive credentials
+githubtoken.txt
+
+# Intermediate compiled files
+schemas/gschemas.compiled
+tests/mock.gresource
+
+# Temporary and editor files
+scratch/
+*~
+*.swp
+.DS_Store
