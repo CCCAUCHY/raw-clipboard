@@ -1060,8 +1060,7 @@ export default class RawClipboardExtension extends Extension {
             // -------------------------------------------------------------
             // 遍历插入即查重：直接将 raw 二进制流按 MIME 投递进 Radix Tree
             // 1. 若全路径完全匹配已有条目 -> 100% 相同内容 (Duplicate)
-            //    - 若该项恰好在队首 (#history[0])：等价于连续重复复制，丢弃已读数据直接退出；
-            //    - 若该项在历史中 (#history[i], i > 0)：LRU 提升至队首，丢弃已读数据；
+            //    - 更新该条目复制时间戳至最新时刻，统一确保其位于历史队首 (LRU 提升至队首)；
             // 2. 若前缀相同但在某处分叉 -> 自动裂变出公共前缀节点，共享前缀物理内存；
             // 3. 全新独立条目 -> 挂载为新分支，插入队首。
             this._debug(`[RawClipboard] 将数据投递至存储查重内核 (MIME: ${core.mime}, 大小: ${size} 字节)...`);
@@ -1131,28 +1130,26 @@ export default class RawClipboardExtension extends Extension {
                     existing.time = copyTime;
                 } catch (_) {}
 
-                const wasDeleted = this.#deletedEntries.has(existing);
-                if (wasDeleted) {
+                if (this.#deletedEntries.has(existing)) {
                     this.#deletedEntries.delete(existing);
                     this._undoStack = this._undoStack.filter(e => e !== existing);
                     this._updateUndoButton();
                 }
 
+                // 统一提升至队首（若已在队首则保持，非队首则移至队首）
                 const existingIdx = this.#history.indexOf(existing);
-                if (existingIdx === 0) {
-                    this._debug('[RawClipboard] 命中队首相同条目（连续相同内容），跳过重复入库');
-                    if (wasDeleted && this._popup && this._popup.visible) {
-                        this._queueRender();
+                if (existingIdx !== 0) {
+                    if (existingIdx > 0) {
+                        this.#history.splice(existingIdx, 1);
                     }
-                    return;
-                } else if (existingIdx > 0) {
-                    this._log(`[RawClipboard] 命中历史第 ${existingIdx + 1} 项相同条目，LRU 提升至队首: "${existing.preview}"`);
-                    this.#history.splice(existingIdx, 1);
                     this.#history.unshift(existing);
-                    if (this._popup && this._popup.visible) {
-                        this._queueRender();
-                    }
-                    return;
+                    this._log(`[RawClipboard] 命中历史相同条目，LRU 提升至队首: "${existing.preview}"`);
+                } else {
+                    this._debug(`[RawClipboard] 命中队首相同条目（连续复制），更新时间戳: "${existing.preview}"`);
+                }
+
+                if (this._popup && this._popup.visible) {
+                    this._queueRender();
                 }
                 return;
             }
