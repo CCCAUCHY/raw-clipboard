@@ -62,20 +62,21 @@ function shouldUseMotion() {
     return true;
 }
 
-// 格式化记录复制时间 (当天显示 HH:mm:ss，跨天显示 MM-DD HH:mm)
+// 格式化记录复制时间 (当天显示 HH:mm:ss，跨天显示 n天前 HH:mm)
 export function formatTime(timestamp) {
     if (!timestamp || typeof timestamp !== 'number') return '';
     const d = new Date(timestamp);
     if (isNaN(d.getTime())) return '';
     const pad = n => String(n).padStart(2, '0');
     const now = new Date();
-    const isSameDay = d.getFullYear() === now.getFullYear() &&
-                      d.getMonth() === now.getMonth() &&
-                      d.getDate() === now.getDate();
-    if (isSameDay) {
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    const itemStart = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+    const diffDays = Math.max(0, Math.floor((todayStart - itemStart) / (24 * 60 * 60 * 1000)));
+
+    if (diffDays === 0) {
         return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
     }
-    return `${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    return `${diffDays}天前 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 const Utf8Decoder = new TextDecoder();
@@ -530,6 +531,101 @@ export default class RawClipboardExtension extends Extension {
         return this.#history.filter(e => !this.#deletedEntries.has(e));
     }
 
+    _sortMode = 'queue'; // 'queue' | 'size' | 'type' | 'initial'
+
+    get sortMode() {
+        return this._sortMode;
+    }
+
+    _getSortedEntries() {
+        const visible = this._getVisibleEntries();
+        if (this._sortMode === 'queue' || visible.length <= 1) {
+            return visible;
+        }
+
+        const orderMap = new Map();
+        visible.forEach((entry, idx) => orderMap.set(entry, idx));
+        const copy = [...visible];
+
+        if (this._sortMode === 'size') {
+            copy.sort((a, b) => {
+                const sizeA = typeof a.size === 'number' ? a.size : (a.bytes ? a.bytes.get_size() : 0);
+                const sizeB = typeof b.size === 'number' ? b.size : (b.bytes ? b.bytes.get_size() : 0);
+                if (sizeB !== sizeA) {
+                    return sizeB - sizeA;
+                }
+                return orderMap.get(a) - orderMap.get(b);
+            });
+        } else if (this._sortMode === 'type') {
+            const typeRank = { 'text': 1, 'html': 2, 'files': 3, 'image': 4, 'raw': 5 };
+            copy.sort((a, b) => {
+                const rankA = typeRank[a.type] || 99;
+                const rankB = typeRank[b.type] || 99;
+                if (rankA !== rankB) {
+                    return rankA - rankB;
+                }
+                return orderMap.get(a) - orderMap.get(b);
+            });
+        } else if (this._sortMode === 'initial') {
+            const getInitial = (str) => {
+                if (!str || typeof str !== 'string') return null;
+                const trimmed = str.trim();
+                if (trimmed.length === 0) return null;
+                const c = trimmed[0];
+                if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+                    return c.toUpperCase();
+                }
+                return null;
+            };
+
+            copy.sort((a, b) => {
+                const initA = getInitial(a.preview);
+                const initB = getInitial(b.preview);
+
+                const isEngA = initA !== null;
+                const isEngB = initB !== null;
+
+                if (isEngA && isEngB) {
+                    if (initA !== initB) {
+                        return initA.localeCompare(initB);
+                    }
+                    const cmp = a.preview.localeCompare(b.preview, 'en', { sensitivity: 'base' });
+                    if (cmp !== 0) return cmp;
+                    return orderMap.get(a) - orderMap.get(b);
+                } else if (isEngA && !isEngB) {
+                    return -1; // 英文排在前面
+                } else if (!isEngA && isEngB) {
+                    return 1;  // 其他语言排在英文后面
+                } else {
+                    // 其他语言排在英文后面按入队顺序排序
+                    return orderMap.get(a) - orderMap.get(b);
+                }
+            });
+        }
+
+        return copy;
+    }
+
+    _setSortMode(mode) {
+        if (this._sortMode === mode) return;
+        this._sortMode = mode;
+        if (this._sortButtons) {
+            this._sortButtons.forEach((btn, id) => {
+                if (id === mode) {
+                    btn.add_style_class_name('active');
+                } else {
+                    btn.remove_style_class_name('active');
+                }
+            });
+        }
+        this._currentPage = 0;
+        this._selectedIndex = 0;
+        if (this._popup && this._popup.visible) {
+            this._renderPage();
+            this._updatePageBadge();
+        }
+    }
+
     _isLoggingEnabled() {
         return this._settings ? this._settings.get_boolean('enable-logging') : false;
     }
@@ -613,13 +709,18 @@ export default class RawClipboardExtension extends Extension {
         this._grab = null;
         this._container = null;
         this._popup = null;
+        this._sortBar = null;
+        this._sortButtons = null;
+        this._emptyLabel = null;
         this._listContainer = null;
         this._pageBar = null;
         this._pageBadge = null;
+        this._itemSlots = null;
         this._itemActors = null;
         this._isClosing = false;
         this._selectedIndex = 0;
         this._currentPage = 0;
+        this._sortMode = 'queue';
         this._hasKeybinding = false;
         this.#activeNonces.clear();
         this._isRestoring = false;
@@ -1422,31 +1523,41 @@ export default class RawClipboardExtension extends Extension {
         }
     }
 
-    _deleteEntry(index) {
-        // 校验索引为有效整数范围，避免非法参数导致误删
-        if (typeof index !== 'number' || !Number.isInteger(index)) return;
-
+    _deleteEntry(indexOrEntry) {
         if (!this._popup) {
             // 弹窗未打开时（无交互界面 / 单元测试场景），直接物理删除
-            if (index < 0 || index >= this.#history.length) return;
-            const [removed] = this.#history.splice(index, 1);
-            if (removed) {
-                this.#radixTree.remove(removed);
+            if (typeof indexOrEntry === 'number') {
+                if (!Number.isInteger(indexOrEntry) || indexOrEntry < 0 || indexOrEntry >= this.#history.length) return;
+                const [removed] = this.#history.splice(indexOrEntry, 1);
+                if (removed) {
+                    this.#radixTree.remove(removed);
+                }
+            } else if (indexOrEntry && typeof indexOrEntry === 'object') {
+                const idx = this.#history.indexOf(indexOrEntry);
+                if (idx !== -1) {
+                    this.#history.splice(idx, 1);
+                    this.#radixTree.remove(indexOrEntry);
+                }
             }
             return;
         }
 
         // 弹窗处于打开状态：存储层只标记删除，位置不变
-        const visibleEntries = this._getVisibleEntries();
-        if (index < 0 || index >= visibleEntries.length) return;
-        const entry = visibleEntries[index];
+        const sortedEntries = this._getSortedEntries();
+        let entry = null;
+        if (typeof indexOrEntry === 'number') {
+            if (!Number.isInteger(indexOrEntry) || indexOrEntry < 0 || indexOrEntry >= sortedEntries.length) return;
+            entry = sortedEntries[indexOrEntry];
+        } else if (indexOrEntry && typeof indexOrEntry === 'object') {
+            entry = indexOrEntry;
+        }
         if (!entry) return;
 
         this.#deletedEntries.add(entry);
         this._undoStack.push(entry);
         this._debug(`[RawClipboard] 暂存删除历史条目: "${entry.preview}" (待删除条目数: ${this.#deletedEntries.size})`);
 
-        const remainingCount = visibleEntries.length - 1;
+        const remainingCount = sortedEntries.length - 1;
         const totalPages = Math.max(1, Math.ceil(remainingCount / 8));
         if (this._currentPage >= totalPages) {
             this._currentPage = Math.max(0, totalPages - 1);
@@ -1458,7 +1569,7 @@ export default class RawClipboardExtension extends Extension {
             this._selectedIndex = Math.max(0, pageCount - 1);
         }
 
-        // 窗口尺寸严格只根据弹出时的历史条目数量确定，无论删除、撤销多少都不改变
+        // 窗口尺寸严格常驻固定，无论删除、撤销多少都不改变
         this._renderPage();
         this._updatePageBadge();
         this._updateUndoButton();
@@ -1472,17 +1583,17 @@ export default class RawClipboardExtension extends Extension {
         this.#deletedEntries.delete(entry);
         this._debug(`[RawClipboard] 撤销删除，已恢复条目: "${entry.preview}"`);
 
-        const visibleEntries = this._getVisibleEntries();
-        const visibleIndex = visibleEntries.indexOf(entry);
-        if (visibleIndex !== -1) {
+        const sortedEntries = this._getSortedEntries();
+        const sortedIndex = sortedEntries.indexOf(entry);
+        if (sortedIndex !== -1) {
             // 选中项跳转到被恢复项所在页和索引
-            const restoredPage = Math.floor(visibleIndex / 8);
-            const restoredPageIdx = visibleIndex % 8;
+            const restoredPage = Math.floor(sortedIndex / 8);
+            const restoredPageIdx = sortedIndex % 8;
             this._currentPage = restoredPage;
             this._selectedIndex = restoredPageIdx;
         }
 
-        // 窗口尺寸严格只根据弹出时的历史条目数量确定，无论删除、撤销多少都不改变
+        // 窗口尺寸严格常驻固定，无论删除、撤销多少都不改变
         this._renderPage();
         this._updatePageBadge();
         this._updateUndoButton();
@@ -1519,38 +1630,40 @@ export default class RawClipboardExtension extends Extension {
     }
 
     _calculateDesiredDimensions(monitor) {
-        // 窗口尺寸直接常驻固定为 8 个条目的尺寸 + 底部区域 (398px + 14px + 28px = 440px)
+        // 窗口尺寸直接常驻固定为 8 个条目的尺寸 + 顶部排序栏 + 底部区域 (28px + 398px + 14px + 28px = 468px)
         // 彻底消除条目变动或弹窗期间新增复制导致的尺寸跳动与条目溢出
-        const popupWidth = 380;
+        const popupWidth = 420;
         const maxDisplayCount = 8;
         const itemHeight = 48;
         const itemSpacing = 2;
         const popupPaddingY = 12; // 容器上下内边距 6px + 6px
         const popupBorderY = 2;   // 边框 1px + 1px
+        const sortBarHeight = 28; // 顶部排序栏高度
         const pageBarHeight = 28; // 底部区域高度 (撤销按钮与页码共享)
 
         let contentHeight = maxDisplayCount * itemHeight + (maxDisplayCount - 1) * itemSpacing; // 398px
-        let popupHeight = contentHeight + popupPaddingY + popupBorderY + pageBarHeight; // 440px
+        let popupHeight = sortBarHeight + contentHeight + popupPaddingY + popupBorderY + pageBarHeight; // 468px
         const effectivePageBarHeight = pageBarHeight;
 
         // 严密屏幕边界安全防御
         const maxMonitorHeight = monitor ? (monitor.height - 64) : 800;
         if (popupHeight > maxMonitorHeight) {
             popupHeight = maxMonitorHeight;
-            contentHeight = Math.max(50, popupHeight - popupPaddingY - popupBorderY - effectivePageBarHeight);
+            contentHeight = Math.max(50, popupHeight - popupPaddingY - popupBorderY - sortBarHeight - effectivePageBarHeight);
         }
 
         return {
             popupWidth,
             popupHeight,
             contentHeight,
+            sortBarHeight,
             pageBarHeight: effectivePageBarHeight,
         };
     }
 
     _updatePageBadge() {
         if (!this._pageBadge) return;
-        const currentEntries = this._getVisibleEntries();
+        const currentEntries = this._getSortedEntries();
         const totalCount = currentEntries.length;
         const totalPages = Math.max(1, Math.ceil(totalCount / 8));
         if (totalCount === 0 || totalPages <= 1) {
@@ -1617,9 +1730,55 @@ export default class RawClipboardExtension extends Extension {
             // 阻断弹窗内部的点击事件冒泡，避免点击弹窗内部空白区域时误关闭
             this._popup.connect('button-press-event', () => Clutter.EVENT_STOP);
 
-            // 计算定位与严格尺寸约束 (直接常驻固定为 8 个条目的尺寸 + 底部区域: 440px)
-            const { popupWidth, popupHeight, contentHeight, pageBarHeight } = this._calculateDesiredDimensions(monitor);
+            // 计算定位与严格尺寸约束 (直接常驻固定为 8 个条目的尺寸 + 顶部排序栏 + 底部区域: 468px)
+            const { popupWidth, popupHeight, contentHeight, pageBarHeight, sortBarHeight } = this._calculateDesiredDimensions(monitor);
             const contentWidth = popupWidth - 12;
+
+            // 顶部排序栏容器 (4个排序切换按钮：入队顺序、大小、类型、首字母)
+            this._sortBar = new St.BoxLayout({
+                style_class: 'raw-clipboard-sort-bar',
+                orientation: Clutter.Orientation.HORIZONTAL,
+                reactive: true,
+                x_expand: true,
+                y_expand: false,
+                x_align: Clutter.ActorAlign.FILL,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+
+            this._sortButtons = new Map();
+            const sortOptions = [
+                { id: 'queue', label: '入队顺序' },
+                { id: 'size', label: '大小' },
+                { id: 'type', label: '类型' },
+                { id: 'initial', label: '首字母' },
+            ];
+
+            sortOptions.forEach(opt => {
+                const btnLabel = new St.Label({
+                    text: opt.label,
+                    style_class: 'raw-clipboard-sort-label',
+                    y_align: Clutter.ActorAlign.CENTER,
+                    x_align: Clutter.ActorAlign.CENTER,
+                });
+                if (btnLabel.clutter_text) {
+                    btnLabel.clutter_text.use_markup = false;
+                }
+                const btn = new St.Button({
+                    style_class: `raw-clipboard-sort-btn ${this._sortMode === opt.id ? 'active' : ''}`,
+                    can_focus: true,
+                    reactive: true,
+                    track_hover: true,
+                    x_expand: true,
+                    y_align: Clutter.ActorAlign.CENTER,
+                    child: btnLabel,
+                });
+                btn.connect('clicked', () => {
+                    this._setSortMode(opt.id);
+                });
+                this._sortButtons.set(opt.id, btn);
+                this._sortBar.add_child(btn);
+            });
+            this._popup.add_child(this._sortBar);
 
             // 列表条目容器：直接放置于弹窗主体内，彻底弃用滚动条，根除不整齐切割
             this._listContainer = new St.BoxLayout({
@@ -1716,6 +1875,17 @@ export default class RawClipboardExtension extends Extension {
             this._popup.min_height = popupHeight;
             this._popup.max_height = popupHeight;
 
+            if (sortBarHeight > 0) {
+                this._sortBar.set_size(contentWidth, sortBarHeight);
+                this._sortBar.width = contentWidth;
+                this._sortBar.height = sortBarHeight;
+                this._sortBar.min_height = sortBarHeight;
+                this._sortBar.max_height = sortBarHeight;
+                this._sortBar.show();
+            } else {
+                this._sortBar.hide();
+            }
+
             this._listContainer.set_size(contentWidth, contentHeight);
             this._listContainer.width = contentWidth;
             this._listContainer.height = contentHeight;
@@ -1755,7 +1925,7 @@ export default class RawClipboardExtension extends Extension {
             const SCROLL_DEBOUNCE_MS = 60; // 60ms 极速防抖：过滤瞬间机械抖动，同时确保连续滚轮与方向键一致的瞬时响应
 
             const handleScrollEvent = (_actor, event) => {
-                const currentEntries = this._getVisibleEntries();
+                const currentEntries = this._getSortedEntries();
                 const totalPages = Math.max(1, Math.ceil(currentEntries.length / 8));
                 if (totalPages <= 1) return Clutter.EVENT_STOP;
 
@@ -1860,10 +2030,16 @@ export default class RawClipboardExtension extends Extension {
                 try { this._container.destroy(); } catch (_) {}
                 this._container = null;
                 this._popup = null;
+                this._sortBar = null;
+                this._sortButtons = null;
+                this._emptyLabel = null;
                 this._listContainer = null;
                 this._pageBar = null;
                 this._pageBadge = null;
                 this._undoBtn = null;
+                this._itemSlots = null;
+                this._itemActors = null;
+                this._sortMode = 'queue';
             }
             if (this._grab) {
                 Main.popModal(this._grab);
@@ -1904,11 +2080,16 @@ export default class RawClipboardExtension extends Extension {
                 this._container.destroy();
                 this._container = null;
                 this._popup = null;
+                this._sortBar = null;
+                this._sortButtons = null;
+                this._emptyLabel = null;
                 this._listContainer = null;
                 this._pageBar = null;
                 this._pageBadge = null;
                 this._undoBtn = null;
+                this._itemSlots = null;
                 this._itemActors = null; // 切断 UI 控件对 entry 的闭包持有，允许 GC 即时回收
+                this._sortMode = 'queue';
             }
             this._isClosing = false;
         };
@@ -1926,7 +2107,7 @@ export default class RawClipboardExtension extends Extension {
     }
 
     _setPage(pageIndex, newSelectedIndex = null) {
-        const currentEntries = this._getVisibleEntries();
+        const currentEntries = this._getSortedEntries();
         const totalPages = Math.max(1, Math.ceil(currentEntries.length / 8));
         if (pageIndex < 0 || pageIndex >= totalPages) return;
 
@@ -1948,33 +2129,187 @@ export default class RawClipboardExtension extends Extension {
         return this._queueRender();
     }
 
+    _createSlot(slotIndex) {
+        const itemBox = new St.BoxLayout({
+            style_class: 'raw-clipboard-item',
+            orientation: Clutter.Orientation.HORIZONTAL,
+            reactive: true,
+            track_hover: true,
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        if (typeof itemBox.set_height === 'function') {
+            itemBox.set_height(48);
+        }
+        itemBox.height = 48;
+        itemBox.min_height = 48;
+        itemBox.max_height = 48;
+
+        // 图标 / 缩略图
+        const iconActor = new St.Icon({
+            icon_name: 'edit-copy-symbolic',
+            style_class: 'raw-clipboard-item-icon',
+            icon_size: 20,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        itemBox.add_child(iconActor);
+
+        // 内容文本区
+        const contentBox = new St.BoxLayout({
+            style_class: 'raw-clipboard-item-content',
+            orientation: Clutter.Orientation.VERTICAL,
+            x_expand: true,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+
+        const previewLabel = new St.Label({
+            text: '',
+            style_class: 'raw-clipboard-item-preview',
+        });
+        if (previewLabel.clutter_text) {
+            previewLabel.clutter_text.use_markup = false;
+            previewLabel.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        }
+
+        const subLabel = new St.Label({
+            text: '',
+            style_class: 'raw-clipboard-item-sub',
+        });
+        if (subLabel.clutter_text) {
+            subLabel.clutter_text.use_markup = false;
+        }
+
+        contentBox.add_child(previewLabel);
+        contentBox.add_child(subLabel);
+        itemBox.add_child(contentBox);
+
+        // 复制时间展示 (右侧对齐，位于内容与删除按钮之间)
+        const timeLabel = new St.Label({
+            text: '',
+            style_class: 'raw-clipboard-item-time',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        if (timeLabel.clutter_text) {
+            timeLabel.clutter_text.use_markup = false;
+        }
+        itemBox.add_child(timeLabel);
+
+        // 扁平化垃圾桶删除按钮 (48x48 正方形点击热区，居于条目右侧)
+        const deleteIcon = new St.Icon({
+            icon_name: 'user-trash-symbolic',
+            icon_size: 16,
+            x_align: Clutter.ActorAlign.CENTER,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        const deleteBtn = new St.Button({
+            style_class: 'raw-clipboard-delete-btn',
+            can_focus: true,
+            reactive: true,
+            track_hover: true,
+            y_align: Clutter.ActorAlign.CENTER,
+            x_align: Clutter.ActorAlign.CENTER,
+            child: deleteIcon,
+        });
+        deleteBtn.set_size(48, 48);
+        deleteBtn.width = 48;
+        deleteBtn.height = 48;
+
+        const slot = {
+            itemBox,
+            iconActor,
+            contentBox,
+            previewLabel,
+            subLabel,
+            timeLabel,
+            deleteBtn,
+            currentEntry: null,
+            currentGIcon: null,
+            currentIconName: null,
+        };
+
+        deleteBtn.connect('button-press-event', (_actor, event) => {
+            if (event.get_button() === 1 && slot.currentEntry) {
+                this._deleteEntry(slot.currentEntry);
+            }
+            return Clutter.EVENT_STOP;
+        });
+        deleteBtn.connect('button-release-event', () => Clutter.EVENT_STOP);
+        deleteBtn.connect('clicked', () => {
+            if (slot.currentEntry) {
+                this._deleteEntry(slot.currentEntry);
+            }
+        });
+        itemBox.add_child(deleteBtn);
+
+        // 点击条目恢复 (删除按钮自身已消费事件并停止冒泡，抵达此处的事件必然是条目正文点击)
+        itemBox.connect('button-press-event', (_actor, event) => {
+            if (event.get_button() === 1 && slot.currentEntry) {
+                try {
+                    this._restoreEntry(slot.currentEntry);
+                    this._closePopup();
+                } catch (e) {
+                    this._error('[RawClipboard] Restore on click failed:', e);
+                }
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_PROPAGATE;
+        });
+
+        // 悬停高亮
+        itemBox.connect('notify::hover', () => {
+            if (itemBox.hover) {
+                this._setSelectedIndex(slotIndex);
+            }
+        });
+
+        return slot;
+    }
+
     _renderPage() {
         if (this._renderIdleId) {
             GLib.source_remove(this._renderIdleId);
             this._renderIdleId = 0;
         }
         if (!this._listContainer) return;
-        this._listContainer.destroy_all_children();
-        this._itemActors = [];
 
-        const currentEntries = this._getVisibleEntries();
-        const totalCount = currentEntries.length;
+        if (!this._itemSlots) {
+            this._itemSlots = [];
+        }
+
+        const sortedEntries = this._getSortedEntries();
+        const totalCount = sortedEntries.length;
+
         if (totalCount === 0) {
             this._currentPage = 0;
             this._selectedIndex = 0;
-            const emptyLabel = new St.Label({
-                text: '剪贴板历史为空',
-                style_class: 'raw-clipboard-empty',
-                x_expand: true,
-                y_expand: true,
-                x_align: Clutter.ActorAlign.CENTER,
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-            if (emptyLabel.clutter_text) {
-                emptyLabel.clutter_text.use_markup = false;
+            this._itemActors = [];
+
+            // 隐藏所有槽位
+            for (const slot of this._itemSlots) {
+                slot.currentEntry = null;
+                slot.itemBox.hide();
             }
-            this._listContainer.add_child(emptyLabel);
+
+            if (!this._emptyLabel) {
+                this._emptyLabel = new St.Label({
+                    text: '剪贴板历史为空',
+                    style_class: 'raw-clipboard-empty',
+                    x_expand: true,
+                    y_expand: true,
+                    x_align: Clutter.ActorAlign.CENTER,
+                    y_align: Clutter.ActorAlign.CENTER,
+                });
+                if (this._emptyLabel.clutter_text) {
+                    this._emptyLabel.clutter_text.use_markup = false;
+                }
+                this._listContainer.add_child(this._emptyLabel);
+            }
+            this._emptyLabel.show();
             return;
+        }
+
+        if (this._emptyLabel) {
+            this._emptyLabel.hide();
         }
 
         const totalPages = Math.max(1, Math.ceil(totalCount / 8));
@@ -1982,147 +2317,77 @@ export default class RawClipboardExtension extends Extension {
             this._currentPage = Math.max(0, totalPages - 1);
         }
         const startIndex = this._currentPage * 8;
-        const pageItems = currentEntries.slice(startIndex, startIndex + 8);
+        const pageItems = sortedEntries.slice(startIndex, startIndex + 8);
         if (this._selectedIndex >= pageItems.length) {
             this._selectedIndex = Math.max(0, pageItems.length - 1);
         }
 
-        pageItems.forEach((entry, idx) => {
-            const globalIndex = startIndex + idx;
-            const itemBox = new St.BoxLayout({
-                style_class: `raw-clipboard-item ${idx === this._selectedIndex ? 'selected' : ''}`,
-                orientation: Clutter.Orientation.HORIZONTAL,
-                reactive: true,
-                track_hover: true,
-                x_expand: true,
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-            if (typeof itemBox.set_height === 'function') {
-                itemBox.set_height(48);
+        for (let i = 0; i < pageItems.length; i++) {
+            const entry = pageItems[i];
+            let slot = this._itemSlots[i];
+            if (!slot) {
+                slot = this._createSlot(i);
+                this._itemSlots[i] = slot;
+                this._listContainer.add_child(slot.itemBox);
             }
-            itemBox.height = 48;
-            itemBox.min_height = 48;
-            itemBox.max_height = 48;
 
-            // 图标 / 缩略图
-            let iconActor;
+            slot.currentEntry = entry;
+
+            // 1. 图标/缩略图：仅在真实变更时更新，彻底杜绝材质销毁导致的闪烁
             if (entry.thumbIcon) {
-                iconActor = new St.Icon({
-                    gicon: entry.thumbIcon,
-                    style_class: 'raw-clipboard-item-thumb',
-                    icon_size: 34,
-                    y_align: Clutter.ActorAlign.CENTER,
-                });
+                if (slot.currentGIcon !== entry.thumbIcon) {
+                    slot.iconActor.icon_name = null;
+                    slot.iconActor.gicon = entry.thumbIcon;
+                    slot.iconActor.style_class = 'raw-clipboard-item-thumb';
+                    slot.iconActor.icon_size = 34;
+                    slot.currentGIcon = entry.thumbIcon;
+                    slot.currentIconName = null;
+                }
             } else {
-                iconActor = new St.Icon({
-                    icon_name: entry.icon || 'edit-copy-symbolic',
-                    style_class: 'raw-clipboard-item-icon',
-                    icon_size: 20,
-                    y_align: Clutter.ActorAlign.CENTER,
-                });
-            }
-            itemBox.add_child(iconActor);
-
-            // 内容文本区
-            const contentBox = new St.BoxLayout({
-                style_class: 'raw-clipboard-item-content',
-                orientation: Clutter.Orientation.VERTICAL,
-                x_expand: true,
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-
-            const previewLabel = new St.Label({
-                text: entry.preview,
-                style_class: 'raw-clipboard-item-preview',
-            });
-            if (previewLabel.clutter_text) {
-                previewLabel.clutter_text.use_markup = false; // 禁用 Pango Markup，按纯文本显示
-                previewLabel.clutter_text.ellipsize = Pango.EllipsizeMode.END;
-            }
-
-            const subLabel = new St.Label({
-                text: entry.subtitle,
-                style_class: 'raw-clipboard-item-sub',
-            });
-            if (subLabel.clutter_text) {
-                subLabel.clutter_text.use_markup = false;
-            }
-
-            contentBox.add_child(previewLabel);
-            contentBox.add_child(subLabel);
-            itemBox.add_child(contentBox);
-
-            // 复制时间展示 (右侧对齐，位于内容与删除按钮之间)
-            const timeLabel = new St.Label({
-                text: formatTime(entry.time),
-                style_class: 'raw-clipboard-item-time',
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-            if (timeLabel.clutter_text) {
-                timeLabel.clutter_text.use_markup = false;
-            }
-            itemBox.add_child(timeLabel);
-
-            // 扁平化垃圾桶删除按钮 (48x48 正方形点击热区，居于条目右侧)
-            const deleteIcon = new St.Icon({
-                icon_name: 'user-trash-symbolic',
-                icon_size: 16,
-                x_align: Clutter.ActorAlign.CENTER,
-                y_align: Clutter.ActorAlign.CENTER,
-            });
-            const deleteBtn = new St.Button({
-                style_class: 'raw-clipboard-delete-btn',
-                can_focus: true,
-                reactive: true,
-                track_hover: true,
-                y_align: Clutter.ActorAlign.CENTER,
-                x_align: Clutter.ActorAlign.CENTER,
-                child: deleteIcon,
-            });
-            deleteBtn.set_size(48, 48);
-            deleteBtn.width = 48;
-            deleteBtn.height = 48;
-
-            deleteBtn.connect('button-press-event', (_actor, event) => {
-                if (event.get_button() === 1) {
-                    this._deleteEntry(globalIndex);
+                const iconName = entry.icon || 'edit-copy-symbolic';
+                if (slot.currentIconName !== iconName || slot.currentGIcon !== null) {
+                    slot.iconActor.gicon = null;
+                    slot.iconActor.icon_name = iconName;
+                    slot.iconActor.style_class = 'raw-clipboard-item-icon';
+                    slot.iconActor.icon_size = 20;
+                    slot.currentIconName = iconName;
+                    slot.currentGIcon = null;
                 }
-                return Clutter.EVENT_STOP;
-            });
-            deleteBtn.connect('button-release-event', () => Clutter.EVENT_STOP);
-            deleteBtn.connect('clicked', () => {
-                this._deleteEntry(globalIndex);
-            });
-            itemBox.add_child(deleteBtn);
+            }
 
-            // 点击条目恢复 (删除按钮自身已消费事件并停止冒泡，抵达此处的事件必然是条目正文点击)
-            itemBox.connect('button-press-event', (_actor, event) => {
-                if (event.get_button() === 1) {
-                    try {
-                        this._restoreEntry(entry);
-                        this._closePopup();
-                    } catch (e) {
-                        this._error('[RawClipboard] Restore on click failed:', e);
-                    }
-                    return Clutter.EVENT_STOP;
-                }
-                return Clutter.EVENT_PROPAGATE;
-            });
+            // 2. 文字与时间在位更新
+            if (slot.previewLabel.text !== entry.preview) {
+                slot.previewLabel.text = entry.preview || '';
+            }
+            if (slot.subLabel.text !== entry.subtitle) {
+                slot.subLabel.text = entry.subtitle || '';
+            }
+            const timeText = formatTime(entry.time);
+            if (slot.timeLabel.text !== timeText) {
+                slot.timeLabel.text = timeText;
+            }
 
-            // 悬停高亮
-            itemBox.connect('notify::hover', () => {
-                if (itemBox.hover) {
-                    this._setSelectedIndex(idx);
-                }
-            });
+            // 3. 选中态
+            if (i === this._selectedIndex) {
+                slot.itemBox.add_style_class_name('selected');
+            } else {
+                slot.itemBox.remove_style_class_name('selected');
+            }
 
-            this._listContainer.add_child(itemBox);
-            this._itemActors.push(itemBox);
-        });
+            slot.itemBox.show();
+        }
+
+        // 隐藏多余的槽位 (若当前页不满 8 条)
+        for (let i = pageItems.length; i < this._itemSlots.length; i++) {
+            this._itemSlots[i].currentEntry = null;
+            this._itemSlots[i].itemBox.hide();
+        }
+
+        this._itemActors = this._itemSlots.slice(0, pageItems.length).map(s => s.itemBox);
     }
 
     _setSelectedIndex(index) {
-        const currentEntries = this._getVisibleEntries();
+        const currentEntries = this._getSortedEntries();
         const startIndex = this._currentPage * 8;
         const pageCount = Math.min(8, currentEntries.length - startIndex);
         if (index < 0 || index >= pageCount) return;
@@ -2149,6 +2414,18 @@ export default class RawClipboardExtension extends Extension {
         }
 
         const state = typeof event.get_state === 'function' ? event.get_state() : 0;
+        const SORT_MODES = ['queue', 'size', 'type', 'initial'];
+        const isShift = Boolean(state & Clutter.ModifierType.SHIFT_MASK);
+
+        // Tab / Shift+Tab: 循环切换排序方式 (入队顺序 -> 大小 -> 类型 -> 首字母)
+        if (symbol === Clutter.KEY_Tab || symbol === Clutter.KEY_ISO_Left_Tab) {
+            const curIdx = SORT_MODES.indexOf(this._sortMode);
+            const nextIdx = (isShift || symbol === Clutter.KEY_ISO_Left_Tab)
+                ? (curIdx - 1 + SORT_MODES.length) % SORT_MODES.length
+                : (curIdx + 1) % SORT_MODES.length;
+            this._setSortMode(SORT_MODES[nextIdx]);
+            return Clutter.EVENT_STOP;
+        }
 
         // 快捷键关闭 (二次兜底)：若当前按键与设置的 toggle-shortcut 匹配，则关闭弹窗
         if (this._settings) {
@@ -2178,7 +2455,7 @@ export default class RawClipboardExtension extends Extension {
             }
         }
 
-        const currentEntries = this._getVisibleEntries();
+        const currentEntries = this._getSortedEntries();
         const totalCount = currentEntries.length;
         if (totalCount === 0) return Clutter.EVENT_STOP;
 
@@ -2245,7 +2522,7 @@ export default class RawClipboardExtension extends Extension {
         if (symbol === Clutter.KEY_Delete || symbol === Clutter.KEY_BackSpace) {
             const globalIndex = this._currentPage * 8 + this._selectedIndex;
             if (globalIndex >= 0 && globalIndex < totalCount) {
-                this._deleteEntry(globalIndex);
+                this._deleteEntry(currentEntries[globalIndex]);
             }
             return Clutter.EVENT_STOP;
         }

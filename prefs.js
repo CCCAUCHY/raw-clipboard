@@ -292,8 +292,12 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
                 subtitle: '当历史超过 8 项时，使用鼠标滚轮上下滚动，或按方向键 ← / →（或 PageUp / PageDown）快速翻页\nWhen history exceeds 8 items, use mouse wheel to scroll, or press Arrow Keys ← / → (or PageUp / PageDown) to flip pages.',
             },
             {
+                title: '多种排序方式\nMultiple Sort Modes',
+                subtitle: '弹窗顶部提供 4 种排序切换方式（入队顺序、大小、类型、首字母），支持点击或按 Tab 键（Shift+Tab 反向）快捷循环切换；选择首字母排序时，英文条目按 A-Z 优先排列，其他语言排在英文后面按入队顺序排列。\nTop bar provides 4 sorting modes (Queue Order, Size, Type, Initial Letter), supporting click or Tab (Shift+Tab) cycling; Initial letter mode sorts English items (A-Z) first, with other languages following in queue order.',
+            },
+            {
                 title: '复制时间\nCopy Timestamp',
-                subtitle: '每个历史条目右侧均记录并显示复制那一刻的时间（当天显示时分秒，跨天显示月日时分）；若重复复制相同内容，将自动更新其复制时间并提升至队首。\nEach item records and displays its exact copy timestamp on the right (HH:mm:ss for today, MM-DD HH:mm for past days); duplicate copies automatically update their copy timestamp and promote to the top.',
+                subtitle: '每个历史条目右侧均记录并显示复制那一刻的时间（当天显示时分秒，跨天显示 n天前 时分）；若重复复制相同内容，将自动更新其复制时间并提升至队首。\nEach item records and displays its exact copy timestamp on the right (HH:mm:ss for today, n days ago HH:mm for past days); duplicate copies automatically update their copy timestamp and promote to the top.',
             },
             {
                 title: '删除条目与撤销\nDelete and Undo',

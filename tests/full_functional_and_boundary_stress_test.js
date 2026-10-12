@@ -348,51 +348,51 @@ const reporter = new TestReporter();
 // ============================================================================
 reporter.suite('1. 弹窗尺寸与底部页码规则验证');
 
-await reporter.run('1.1 条目数 T = 0 时：弹窗常驻固定为 8 条目尺寸 (440px)，正确展示居中空提示标签，底部区域常驻展示', async () => {
+await reporter.run('1.1 条目数 T = 0 时：弹窗常驻固定为 8 条目尺寸 + 排序栏 (468px)，正确展示居中空提示标签，底部区域常驻展示', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
-    // 验证 _calculateDesiredDimensions 理论计算值 (常驻 8 项尺寸 + 底部区域)
+    // 验证 _calculateDesiredDimensions 理论计算值 (常驻 8 项尺寸 + 顶部排序栏 + 底部区域: 28 + 398 + 14 + 28 = 468)
     const dims = ext._calculateDesiredDimensions(null);
-    assert(dims.popupWidth === 380, `弹窗宽度应为 380px，实际: ${dims.popupWidth}`);
-    assert(dims.popupHeight === 440, `空列表弹窗高度常驻固定为 440px (398 + 14 + 28)，实际: ${dims.popupHeight}`);
+    assert(dims.popupWidth === 420, `弹窗宽度应为 420px，实际: ${dims.popupWidth}`);
+    assert(dims.popupHeight === 468, `空列表弹窗高度常驻固定为 468px (28 + 398 + 14 + 28)，实际: ${dims.popupHeight}`);
+    assert(dims.sortBarHeight === 28, `顶部排序栏高度必须为 28px，实际: ${dims.sortBarHeight}`);
     assert(dims.contentHeight === 398, `空列表内容高度必须为 398px，实际: ${dims.contentHeight}`);
     assert(dims.pageBarHeight === 28, `底部区域高度必须常驻为 28px，实际: ${dims.pageBarHeight}`);
 
     // 打开真实弹窗验证实际 UI Actor
     ext._openPopup();
-    assert(ext._popup.width === 380, `_popup.width 实际: ${ext._popup.width}`);
-    assert(ext._popup.height === 440, `_popup.height 实际: ${ext._popup.height}`);
+    assert(ext._popup.width === 420, `_popup.width 实际: ${ext._popup.width}`);
+    assert(ext._popup.height === 468, `_popup.height 实际: ${ext._popup.height}`);
+    assert(ext._sortBar.height === 28, `_sortBar.height 实际: ${ext._sortBar.height}`);
     assert(ext._listContainer.height === 398, `_listContainer.height 实际: ${ext._listContainer.height}`);
     assert(ext._pageBar.visible === true, `_pageBar 必须常驻处于可见状态 (visible === true)`);
     assert(ext._undoBtn.reactive === false, `初始无待撤销项时撤销按钮禁用`);
 
     // 验证空占位标签
     const children = ext._listContainer.get_children();
-    assert(children.length === 1, `空列表应只包含 1 个占位提示组件，实际: ${children.length}`);
-    assert(children[0].text === '剪贴板历史为空', `空占位提示文本不符合规范，实际: ${children[0].text}`);
-    assert(children[0].style_class.includes('raw-clipboard-empty'), `应应用 raw-clipboard-empty 样式`);
+    assert(children.some(c => c.text === '剪贴板历史为空'), `空列表应包含占位提示组件`);
 
     ext._closePopup();
     ext.disable();
 });
 
-await reporter.run('1.2 条目数 1 <= T <= 8 时：弹窗高度恒定为 8 条目尺寸 + 底部区域 (440px)，完全常驻不发生任何伸缩', async () => {
+await reporter.run('1.2 条目数 1 <= T <= 8 时：弹窗高度恒定为 8 条目尺寸 + 顶部栏 + 底部区域 (468px)，完全常驻不发生任何伸缩', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
-    // 逐级压入条目并验证 T = 1 到 8 时弹窗高度均恒定为 440px
+    // 逐级压入条目并验证 T = 1 到 8 时弹窗高度均恒定为 468px
     for (let t = 1; t <= 8; t++) {
         const src = new MockSelectionSource(['text/plain'], new TextEncoder().encode(`Item-Step-${t}`));
         await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src);
 
         const dims = ext._calculateDesiredDimensions(null);
         assert(dims.contentHeight === 398, `T=${t} 内容高度恒定为 398px，实际: ${dims.contentHeight}`);
-        assert(dims.popupHeight === 440, `T=${t} 弹窗高度恒定为 440px，实际: ${dims.popupHeight}`);
+        assert(dims.popupHeight === 468, `T=${t} 弹窗高度恒定为 468px，实际: ${dims.popupHeight}`);
         assert(dims.pageBarHeight === 28, `T=${t} 底部区域高度恒定为 28px，实际: ${dims.pageBarHeight}`);
 
         ext._openPopup();
-        assert(ext._popup.height === 440, `T=${t} 打开弹窗高度必须严格为 440px，实际: ${ext._popup.height}`);
+        assert(ext._popup.height === 468, `T=${t} 打开弹窗高度必须严格为 468px，实际: ${ext._popup.height}`);
         assert(ext._listContainer.height === 398, `T=${t} 列表容器高度必须严格为 398px，实际: ${ext._listContainer.height}`);
         assert(ext._pageBar.visible === true, `T=${t} 底部共享区域必须可见`);
         assert(ext._undoBtn !== null, `T=${t} 左下角撤销按钮必须存在`);
@@ -404,7 +404,7 @@ await reporter.run('1.2 条目数 1 <= T <= 8 时：弹窗高度恒定为 8 条�
     ext.disable();
 });
 
-await reporter.run('1.3 条目数 T > 8 时：弹窗高度严格锁定为 8 条目尺寸 (412px) + 页码高度 (28px) = 440px，底部页码条居中显示', async () => {
+await reporter.run('1.3 条目数 T > 8 时：弹窗高度严格锁定为 8 条目尺寸 + 顶部栏 + 底部区域 = 468px，底部页码条居中显示', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -422,10 +422,10 @@ await reporter.run('1.3 条目数 T > 8 时：弹窗高度严格锁定为 8 条�
         const dims = ext._calculateDesiredDimensions(null);
         assert(dims.contentHeight === 398, `T=${targetCount} 内容区必须严格锁定为 8 项高度 398px (8*48+7*2)，实际: ${dims.contentHeight}`);
         assert(dims.pageBarHeight === 28, `T=${targetCount} 页码高度必须为 28px，实际: ${dims.pageBarHeight}`);
-        assert(dims.popupHeight === 440, `T=${targetCount} 弹窗高度必须严格锁定为 440px (412+28)，实际: ${dims.popupHeight}`);
+        assert(dims.popupHeight === 468, `T=${targetCount} 弹窗高度必须严格锁定为 468px，实际: ${dims.popupHeight}`);
 
         ext._openPopup();
-        assert(ext._popup.height === 440, `T=${targetCount} 实际弹窗高度必须为 440px，实际: ${ext._popup.height}`);
+        assert(ext._popup.height === 468, `T=${targetCount} 实际弹窗高度必须为 468px，实际: ${ext._popup.height}`);
         assert(ext._listContainer.height === 398, `T=${targetCount} 实际列表容器高必须为 398px，实际: ${ext._listContainer.height}`);
         assert(ext._pageBar.visible === true, `T=${targetCount} 底部页码条必须可见`);
         assert(ext._pageBar.height === 28, `T=${targetCount} 底部页码条高度必须为 28px`);
@@ -442,7 +442,7 @@ await reporter.run('1.3 条目数 T > 8 时：弹窗高度严格锁定为 8 条�
     ext.disable();
 });
 
-await reporter.run('1.4 最后一页不满 8 条时窗口尺寸保持稳定：末页有 1~7 项时，弹窗高度保持为 440px，页码固定在底部', async () => {
+await reporter.run('1.4 最后一页不满 8 条时窗口尺寸保持稳定：末页有 1~7 项时，弹窗高度保持为 468px，页码固定在底部', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -468,8 +468,8 @@ await reporter.run('1.4 最后一页不满 8 条时窗口尺寸保持稳定：�
         }
 
         ext._openPopup();
-        // 初始在第 0 页: 高度 440px
-        assert(ext._popup.height === 440, `初始第 0 页高度应为 440px`);
+        // 初始在第 0 页: 高度 468px
+        assert(ext._popup.height === 468, `初始第 0 页高度应为 468px`);
 
         // 切换至最后一页
         ext._setPage(sc.lastPageIndex);
@@ -477,7 +477,7 @@ await reporter.run('1.4 最后一页不满 8 条时窗口尺寸保持稳定：�
         assert(ext._itemActors.length === sc.lastPageItems, `末页实际渲染项数应为 ${sc.lastPageItems}，实际: ${ext._itemActors.length}`);
 
         // 验证：弹窗高度保持稳定
-        assert(ext._popup.height === 440, `末页仅 ${sc.lastPageItems} 项时，弹窗高度维持 440px，实际: ${ext._popup.height}`);
+        assert(ext._popup.height === 468, `末页仅 ${sc.lastPageItems} 项时，弹窗高度维持 468px，实际: ${ext._popup.height}`);
         assert(ext._listContainer.height === 398, `列表容器高度必须维持 398px，实际: ${ext._listContainer.height}`);
         assert(ext._pageBar.height === 28, `页码条高度必须维持 28px，实际: ${ext._pageBar.height}`);
         assert(ext._pageBar.visible === true, `页码条必须可见`);
@@ -499,13 +499,13 @@ await reporter.run('1.5 屏幕高度受限时的边界自适应测试 (monitor.h
         await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src);
     }
 
-    // 模拟极小屏幕 (高度仅 400px，最大允许高度 400 - 64 = 336px < 440px)
+    // 模拟极小屏幕 (高度仅 400px，最大允许高度 400 - 64 = 336px < 468px)
     const smallMonitor = { x: 0, y: 0, width: 800, height: 400 };
     const dims = ext._calculateDesiredDimensions(smallMonitor);
 
     assert(dims.popupHeight === 336, `受限屏幕下弹窗高应安全限制在 336px，实际: ${dims.popupHeight}`);
     assert(dims.popupHeight <= smallMonitor.height - 64, `弹窗绝不超出屏幕可用高度`);
-    assert(dims.contentHeight === 336 - 14 - 28, `内容区高度自适应收缩至 ${336 - 14 - 28}px，实际: ${dims.contentHeight}`);
+    assert(dims.contentHeight === 336 - 14 - 28 - 28, `内容区高度自适应收缩至 ${336 - 14 - 28 - 28}px，实际: ${dims.contentHeight}`);
 
     ext.disable();
 });
@@ -1621,7 +1621,7 @@ await reporter.run('8.5 跨页删除末页唯一条目时页码收敛测试', as
     }
 
     ext._openPopup();
-    assert(ext._popup.height === 440, '初始 9 条高 440px');
+    assert(ext._popup.height === 468, '初始 9 条高 468px');
 
     // 跳转到第 1 页 (仅 1 条，即全局第 8 项)
     ext._setPage(1);
@@ -1630,10 +1630,10 @@ await reporter.run('8.5 跨页删除末页唯一条目时页码收敛测试', as
     // 删除该项 (全局索引 8)
     ext._deleteEntry(8);
 
-    // 验证：总项数变 8，当前页自动向前收敛至第 0 页，选中项处于安全边界内 [0, 7]，高度保持 440px (含底部区域)
+    // 验证：总项数变 8，当前页自动向前收敛至第 0 页，选中项处于安全边界内 [0, 7]，高度保持 468px (含底部区域)
     assert(ext._currentPage === 0, `末页唯一项删除后，当前页应自动收敛至第 0 页，实际: ${ext._currentPage}`);
     assert(ext._selectedIndex >= 0 && ext._selectedIndex < 8, `选中索引必须在当前页安全范围内 [0, 7]，实际: ${ext._selectedIndex}`);
-    assert(ext._popup.height === 440, `条目数回落至 8 时，弹窗高度保持为 440px (含底部共享区域)，实际: ${ext._popup.height}`);
+    assert(ext._popup.height === 468, `条目数回落至 8 时，弹窗高度保持为 468px (含底部共享区域)，实际: ${ext._popup.height}`);
     assert(ext._pageBar.visible === true, `回落至 8 项时底部区域保持可见`);
     assert(ext._pageBadge.visible === false, `回落至 8 项时单页页码应隐藏`);
     assert(ext._undoBtn.reactive === true, `存在待撤销删除项时撤销按钮应处于激活状态`);
@@ -1837,7 +1837,7 @@ await reporter.run('8.12 弹窗尺寸恒定测试 (小于8条时无论删除、�
     const initialPopupHeight = ext._popup.height;
     const initialContentHeight = ext._listContainer.height;
     const initialPageBarHeight = ext._pageBar.height;
-    assert(initialPopupHeight === 440, `常驻弹窗高度必须严格等于 440px，实际: ${initialPopupHeight}`);
+    assert(initialPopupHeight === 468, `常驻弹窗高度必须严格等于 468px，实际: ${initialPopupHeight}`);
     assert(initialContentHeight === 398, `常驻内容容器高度必须为 398px，实际: ${initialContentHeight}`);
     assert(initialPageBarHeight === 28, `底部区域高度必须为 28px`);
 
@@ -1881,7 +1881,7 @@ await reporter.run('8.13 弹窗开启期间外部剪贴板新增条目测试 (�
     }
 
     ext._openPopup();
-    assert(ext._popup.height === 440, '初始打开为常驻 440px');
+    assert(ext._popup.height === 468, '初始打开为常驻 468px');
     assert(ext._itemActors.length === 3, '初始渲染 3 项');
 
     // 在弹窗保持开启状态下，系统发生新的复制行为
@@ -1891,7 +1891,7 @@ await reporter.run('8.13 弹窗开启期间外部剪贴板新增条目测试 (�
     // 触发渲染队列
     ext._renderPage();
 
-    assert(ext._popup.height === 440, '新增条目后弹窗高度完全恒定为 440px，无尺寸跳动');
+    assert(ext._popup.height === 468, '新增条目后弹窗高度完全恒定为 468px，无尺寸跳动');
     assert(ext._listContainer.height === 398, '列表容器高度恒定为 398px');
     assert(ext._itemActors.length === 4, '当前页成功平滑展示 4 项，队首为最新条目');
     assert(ext._itemActors[0].get_children().some(c => c.text === 'LiveItem-New-4' || c.get_children && c.get_children().some(cc => cc.text === 'LiveItem-New-4')), '最新条目成功排入队首');
@@ -2320,22 +2320,28 @@ await reporter.run('9.10 快捷键关闭弹窗测试 (弹窗打开状态下按 <
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src);
 
     // 1. 测试通过 _onKeyPress 快捷键事件关闭弹窗
-    ext._openPopup();
-    assert(ext._container !== null, '弹窗成功打开');
+    const origShortcuts = ext._settings.get_strv('toggle-shortcut');
+    ext._settings.set_strv('toggle-shortcut', ['<Super>v']);
+    try {
+        ext._openPopup();
+        assert(ext._container !== null, '弹窗成功打开');
 
-    const shortcutEvent = {
-        get_key_symbol: () => Clutter.KEY_v,
-        get_state: () => Clutter.ModifierType.SUPER_MASK,
-    };
-    const keyRes = ext._onKeyPress(shortcutEvent);
-    assert(keyRes === Clutter.EVENT_STOP, '快捷键事件被消费');
-    assert(ext._container === null, '按快捷键 <Super>v 成功关闭弹窗');
+        const shortcutEvent = {
+            get_key_symbol: () => Clutter.KEY_v,
+            get_state: () => Clutter.ModifierType.SUPER_MASK,
+        };
+        const keyRes = ext._onKeyPress(shortcutEvent);
+        assert(keyRes === Clutter.EVENT_STOP, '快捷键事件被消费');
+        assert(ext._container === null, '按快捷键 <Super>v 成功关闭弹窗');
 
-    // 2. 测试通过 _togglePopup 在弹窗打开时调用关闭
-    ext._openPopup();
-    assert(ext._container !== null, '弹窗再次打开');
-    ext._togglePopup();
-    assert(ext._container === null, '_togglePopup 成功关闭已打开的弹窗');
+        // 2. 测试通过 _togglePopup 在弹窗打开时调用关闭
+        ext._openPopup();
+        assert(ext._container !== null, '弹窗再次打开');
+        ext._togglePopup();
+        assert(ext._container === null, '_togglePopup 成功关闭已打开的弹窗');
+    } finally {
+        ext._settings.set_strv('toggle-shortcut', origShortcuts);
+    }
 
     ext.disable();
 });
@@ -3132,10 +3138,15 @@ await reporter.run('12.10 复制时间在弹窗中显示与 formatTime 格式化
     const formattedNow = formatTime(now);
     assert(/^\d{2}:\d{2}:\d{2}$/.test(formattedNow), `当天时间戳应格式化为 HH:mm:ss，实际: ${formattedNow}`);
 
-    // 跨天时间戳验证 (24小时前)
+    // 跨天时间戳验证 (24小时前与48小时前)
     const yesterday = now - 24 * 60 * 60 * 1000;
     const formattedYesterday = formatTime(yesterday);
-    assert(/^\d{2}-\d{2} \d{2}:\d{2}$/.test(formattedYesterday), `跨天时间戳应格式化为 MM-DD HH:mm，实际: ${formattedYesterday}`);
+    assert(/^\d+天前 \d{2}:\d{2}$/.test(formattedYesterday), `跨天时间戳应格式化为 n天前 HH:mm，实际: ${formattedYesterday}`);
+    assert(formattedYesterday.startsWith('1天前 '), `24小时前应显示 1天前，实际: ${formattedYesterday}`);
+
+    const twoDaysAgo = now - 2 * 24 * 60 * 60 * 1000;
+    const formattedTwoDaysAgo = formatTime(twoDaysAgo);
+    assert(formattedTwoDaysAgo.startsWith('2天前 '), `48小时前应显示 2天前，实际: ${formattedTwoDaysAgo}`);
 
     // 2. 弹窗 UI 中显示条目复制时间
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
@@ -3224,6 +3235,89 @@ await reporter.run('12.11 未知类型元数据raw分树与“未知类型1”�
     assert(restoredEntry.mime === 'application/x-custom-type-alpha', '回灌保持原始声明的未知类型元数据');
     assert(restoredEntry.bytes.get_size() === 4, '回灌保持原始二进制数据大小');
 
+    ext.disable();
+});
+
+await reporter.run('12.12 四种排序方式 (入队顺序/大小/类型/首字母) 与槽位复用零闪烁渲染测试', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 1. 准备多类型、多大小、多首字母测试数据
+    // 条目 1: 中文文本 (入队 #1, 大小: 18B, type: text)
+    const src1 = new MockSelectionSource(['text/plain'], new TextEncoder().encode('中文测试项目'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src1);
+
+    // 条目 2: 英文 Banana (入队 #2, 大小: 6B, type: text, preview: Banana)
+    const src2 = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Banana'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src2);
+
+    // 条目 3: 英文 Apple (入队 #3, 大小: 5B, type: text, preview: Apple)
+    const src3 = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Apple'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src3);
+
+    // 条目 4: HTML 数据 (入队 #4, 大小: 25B, type: html)
+    const src4 = new MockSelectionSource(['text/html'], new TextEncoder().encode('<b>Hello HTML world</b>'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src4);
+
+    // 条目 5: 英文 Cat (入队 #5, 大小: 3B, type: text, preview: Cat)
+    const src5 = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Cat'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src5);
+
+    // 打开弹窗
+    ext._openPopup();
+    assert(ext.sortMode === 'queue', '初始排序模式为入队顺序 (queue)');
+
+    // 2. 模式 1: 入队顺序 (FIFO/LRU: Cat -> <b>Hello... -> Apple -> Banana -> 中文测试项目)
+    let visibleTitles = ext._itemActors.map(a => a.get_children()[1].get_children()[0].text);
+    assert(visibleTitles[0] === 'Cat', '队首为最新入队的 Cat');
+    assert(visibleTitles[1] === '<b>Hello HTML world</b>', '第2项为 HTML');
+    assert(visibleTitles[2] === 'Apple', '第3项为 Apple');
+    assert(visibleTitles[3] === 'Banana', '第4项为 Banana');
+    assert(visibleTitles[4] === '中文测试项目', '末项为最早入队的 中文测试项目');
+
+    // 3. 模式 2: 按大小排序 (size 降序: 25B(HTML) -> 18B(中文) -> 6B(Banana) -> 5B(Apple) -> 3B(Cat))
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Tab, get_state: () => 0 });
+    assert(ext.sortMode === 'size', 'Tab 切换到按大小排序 (size)');
+    visibleTitles = ext._itemActors.map(a => a.get_children()[1].get_children()[0].text);
+    assert(visibleTitles[0] === '<b>Hello HTML world</b>', '最大条目(HTML)排第1');
+    assert(visibleTitles[1] === '中文测试项目', '中文(18B)排第2');
+    assert(visibleTitles[2] === 'Banana', 'Banana(6B)排第3');
+    assert(visibleTitles[3] === 'Apple', 'Apple(5B)排第4');
+    assert(visibleTitles[4] === 'Cat', 'Cat(3B)排第5');
+
+    // 4. 模式 3: 按类型排序 (text(rank 1) -> html(rank 2))
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Tab, get_state: () => 0 });
+    assert(ext.sortMode === 'type', 'Tab 切换到按类型排序 (type)');
+    visibleTitles = ext._itemActors.map(a => a.get_children()[1].get_children()[0].text);
+    // 前4项是 text (按原入队顺序相对排列: Cat, Apple, Banana, 中文测试项目)
+    assert(visibleTitles[0] === 'Cat', 'text 类型优先排在最前');
+    assert(visibleTitles[4] === '<b>Hello HTML world</b>', 'html 类型排在 text 之后');
+
+    // 5. 模式 4: 按首字母排序 (仅英文排前面 A-Z，其他非英文排在英文后面按入队顺序排序)
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Tab, get_state: () => 0 });
+    assert(ext.sortMode === 'initial', 'Tab 切换到按首字母排序 (initial)');
+    visibleTitles = ext._itemActors.map(a => a.get_children()[1].get_children()[0].text);
+    // 英文开头项: Apple (A), Banana (B), Cat (C) 排在最前
+    assert(visibleTitles[0] === 'Apple', 'A 开头排第1');
+    assert(visibleTitles[1] === 'Banana', 'B 开头排第2');
+    assert(visibleTitles[2] === 'Cat', 'C 开头排第3');
+    // 非英文字符开头: <b>Hello... (符号<), 中文测试项目 排在英文后面，按原本入队顺序
+    assert(visibleTitles[3] === '<b>Hello HTML world</b>', '非英文字符项排在英文后面，保持队列顺序');
+    assert(visibleTitles[4] === '中文测试项目', '中文排在最后');
+
+    // 6. Shift+Tab 反向循环测试
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Tab, get_state: () => Clutter.ModifierType.SHIFT_MASK });
+    assert(ext.sortMode === 'type', 'Shift+Tab 反向切换回类型排序');
+
+    // 7. 槽位复用 (Slot Pool) 零闪烁测试
+    const slot0Actor = ext._itemSlots[0].itemBox;
+    const slot0Icon = ext._itemSlots[0].iconActor;
+    // 触发重新渲染
+    ext._renderPage();
+    assert(ext._itemSlots[0].itemBox === slot0Actor, '重新渲染后槽位容器完全复用');
+    assert(ext._itemSlots[0].iconActor === slot0Icon, '重新渲染后 Icon 材质完全复用，杜绝销毁重建闪烁');
+
+    ext._closePopup();
     ext.disable();
 });
 

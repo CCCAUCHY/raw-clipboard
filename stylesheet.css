@@ -6,12 +6,49 @@
     border-radius: 20px;
     border: 1px solid #424247;
     box-shadow: none;
-    width: 380px;
+    width: 420px;
+}
+
+/* 顶部排序栏 (高度28px，4个排序切换按钮：入队顺序、大小、类型、首字母) */
+.raw-clipboard-sort-bar {
+    height: 28px;
+    min-height: 28px;
+    max-height: 28px;
+    width: 408px;
+    spacing: 4px;
+    margin-bottom: 2px;
+}
+
+.raw-clipboard-sort-btn {
+    height: 24px;
+    min-height: 24px;
+    max-height: 24px;
+    padding: 0 8px;
+    border-radius: 6px;
+    border: none;
+    background-color: transparent;
+    color: rgba(255, 255, 255, 0.55);
+    transition-duration: 120ms;
+}
+
+.raw-clipboard-sort-btn:hover {
+    color: rgba(255, 255, 255, 0.85);
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+.raw-clipboard-sort-btn.active {
+    color: #ffffff;
+    background-color: rgba(255, 255, 255, 0.16);
+    font-weight: bold;
+}
+
+.raw-clipboard-sort-label {
+    font-size: 0.82em;
 }
 
 .raw-clipboard-list {
     spacing: 2px;
-    width: 368px;
+    width: 408px;
 }
 
 /* GNOME 原生菜单条目规范 (严格固定 48px 高度) */
@@ -81,7 +118,7 @@
     height: 28px;
     min-height: 28px;
     max-height: 28px;
-    width: 368px;
+    width: 408px;
     padding: 0 8px;
 }
 
