@@ -2217,7 +2217,7 @@ await reporter.run('9.7 鼠标离散滚轮向上/向下翻页与平滑滚轮阈�
     ext.disable();
 });
 
-await reporter.run('9.8 滚轮事件 180ms 防抖保护测试 (快速连续滚动防失控翻页)', async () => {
+await reporter.run('9.8 滚轮事件极速防抖保护测试 (快速连续滚动防失控翻页)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -2238,12 +2238,12 @@ await reporter.run('9.8 滚轮事件 180ms 防抖保护测试 (快速连续滚�
     ext._popup.emit('scroll-event', makeScrollEvent(Clutter.ScrollDirection.DOWN));
     assert(ext._currentPage === 1, '首次向下滚动翻至第 1 页');
 
-    // 立即连续触发多次滚动 (无时间间隔，< 180ms)
+    // 立即连续触发多次滚动 (无时间间隔，瞬时连击)
     ext._popup.emit('scroll-event', makeScrollEvent(Clutter.ScrollDirection.DOWN));
     ext._popup.emit('scroll-event', makeScrollEvent(Clutter.ScrollDirection.DOWN));
     ext._popup.emit('scroll-event', makeScrollEvent(Clutter.ScrollDirection.DOWN));
 
-    assert(ext._currentPage === 1, '180ms 防抖保护生效：瞬间多次滚动被有效吸收，当前页仍为 1');
+    assert(ext._currentPage === 1, '防抖保护生效：瞬间多次滚动被有效吸收，当前页仍为 1');
 
     ext._closePopup();
     ext.disable();

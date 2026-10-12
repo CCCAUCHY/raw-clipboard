@@ -1629,40 +1629,62 @@ export default class RawClipboardExtension extends Extension {
 
             this._popup.set_position(posX, posY);
 
-            // 鼠标滚轮翻页监听 (滚轮向下翻至下一页，向上翻至上一页，防抖180ms确保每次平滑翻单页)
+            // 鼠标滚轮翻页监听 (滚轮向下翻至下一页，向上翻至上一页，灵敏平滑防抖)
             let lastScrollTime = 0;
-            this._popup.connect('scroll-event', (_actor, event) => {
+            let lastScrollDir = 0;
+            let smoothAccumulator = 0;
+            const SCROLL_DEBOUNCE_MS = 60; // 60ms 极速防抖：过滤瞬间机械抖动，同时确保连续滚轮与方向键一致的瞬时响应
+
+            const handleScrollEvent = (_actor, event) => {
                 const currentEntries = this._getVisibleEntries();
                 const totalPages = Math.max(1, Math.ceil(currentEntries.length / 8));
                 if (totalPages <= 1) return Clutter.EVENT_STOP;
 
                 const now = Date.now();
-                if (now - lastScrollTime < 180) {
-                    return Clutter.EVENT_STOP;
-                }
-
                 const direction = event.get_scroll_direction();
                 let delta = 0;
+
                 if (direction === Clutter.ScrollDirection.UP) {
                     delta = -1;
                 } else if (direction === Clutter.ScrollDirection.DOWN) {
                     delta = 1;
                 } else if (direction === Clutter.ScrollDirection.SMOOTH) {
                     const [, dy] = event.get_scroll_delta();
-                    if (dy > 0.1) delta = 1;
-                    else if (dy < -0.1) delta = -1;
+                    if (now - lastScrollTime > 250) {
+                        smoothAccumulator = 0;
+                    }
+                    smoothAccumulator += dy;
+                    if (smoothAccumulator >= 0.25) {
+                        delta = 1;
+                        smoothAccumulator = 0;
+                    } else if (smoothAccumulator <= -0.25) {
+                        delta = -1;
+                        smoothAccumulator = 0;
+                    } else {
+                        return Clutter.EVENT_STOP;
+                    }
                 }
 
                 if (delta !== 0) {
+                    // 反向滚动立即响应零延迟；同向滚动应用 60ms 防抖，保障连续滚轮与方向键一致的顺滑
+                    const isReversal = (lastScrollDir !== 0 && delta !== lastScrollDir);
+                    if (!isReversal && (now - lastScrollTime < SCROLL_DEBOUNCE_MS)) {
+                        return Clutter.EVENT_STOP;
+                    }
+
                     const targetPage = this._currentPage + delta;
                     if (targetPage >= 0 && targetPage < totalPages) {
                         lastScrollTime = now;
-                        this._setPage(targetPage);
+                        lastScrollDir = delta;
+                        this._setPage(targetPage, this._selectedIndex);
                     }
                     return Clutter.EVENT_STOP;
                 }
                 return Clutter.EVENT_PROPAGATE;
-            });
+            };
+
+            this._popup.connect('scroll-event', handleScrollEvent);
+            this._container.connect('scroll-event', handleScrollEvent);
 
             // 渲染当前页条目与更新页码
             this._currentPage = 0;
