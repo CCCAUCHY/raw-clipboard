@@ -170,10 +170,10 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
         shortcutRow.add_suffix(shortcutBox);
         group.add(shortcutRow);
 
-        // 2. 最大历史记录配置项 (5 ~ 1000 项)
+        // 2. 最大历史记录限制配置项 (5 ~ 1000 项)
         const maxItemsRow = new Adw.SpinRow({
-            title: '最大历史记录\nMax History Items',
-            subtitle: '当新的剪贴板历史记录生成时，若剪贴板历史记录数量超出此限制，则自动移除最早的一项记录。\n（范围：5 ~ 1000项，默认 30 项）\nWhen a new clipboard entry is created, if the number of entries exceeds this limit, the oldest entry is automatically removed.\n(Range: 5 ~ 1000 items, Default: 30 items)',
+            title: '最大历史记录限制\nMax History Items Limit',
+            subtitle: '当新的剪贴板历史记录生成或修改此限制时，若剪贴板历史记录数量超出此限制，则自动移除最早的一项记录。\n（范围：5 ~ 1000 项，默认 30 项）\nWhen a new clipboard entry is created or this limit is modified, if the number of entries exceeds this limit, the oldest entry is automatically removed.\n(Range: 5 ~ 1000 items, Default: 30 items)',
             adjustment: new Gtk.Adjustment({
                 lower: 5,
                 upper: 1000,
@@ -185,10 +185,10 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
         settings.bind('max-items', maxItemsRow, 'value', Gio.SettingsBindFlags.DEFAULT);
         group.add(maxItemsRow);
 
-        // 3. 单条记录容量限制 (5 ~ 1024 MB)
+        // 3. 单项记录容量限制 (5 ~ 1024 MB)
         const maxSizeRow = new Adw.SpinRow({
-            title: '单条记录容量限制 (MB)\nSingle Item Size Limit (MB)',
-            subtitle: '若复制的数据超出此限制，则不会被记录。\n（范围：5 ~ 1024 MB，默认 50 MB）\nIf copied data exceeds this limit, it will not be recorded.\n(Range: 5 ~ 1024 MB, Default: 50 MB)',
+            title: '单项记录容量限制 (MB)\nSingle Item Size Limit (MB)',
+            subtitle: '若复制的数据超出此限制，则不会被记录。修改此限制时，自动移除所有超出此限制的记录。\n（范围：5 ~ 1024 MB，默认 50 MB）\nIf copied data exceeds this limit, it will not be recorded. When this limit is modified, all entries exceeding this limit are automatically removed.\n(Range: 5 ~ 1024 MB, Default: 50 MB)',
             adjustment: new Gtk.Adjustment({
                 lower: 5,
                 upper: 1024,
@@ -203,7 +203,7 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
         // 4. 所有记录容量限制 (50 ~ 4096 MB)
         const maxTotalSizeRow = new Adw.SpinRow({
             title: '所有记录容量限制 (MB)\nTotal Size Limit (MB)',
-            subtitle: '本扩展使用字节级前缀复用式存储，当新的剪贴板历史记录生成时，若存储树总大小超出此限制，则自动移除最早的一项或多项记录，直到存储树总大小低于此限制。\n（范围：50 ~ 4096 MB，默认 1024 MB）\nThis extension uses byte-level prefix-sharing storage. When a new entry is created, if total storage exceeds this limit, the oldest entries are automatically removed until storage is below this limit.\n(Range: 50 ~ 4096 MB, Default: 1024 MB)',
+            subtitle: '本扩展使用字节级前缀复用式存储，当新的剪贴板历史记录生成或修改此限制时，若存储树总大小超出此限制，则自动移除最早的一项或多项记录，直到存储树总大小低于此限制。\n（范围：50 ~ 4096 MB，默认 1024 MB）\nThis extension uses byte-level prefix-sharing storage. When a new entry is created or this limit is modified, if total storage exceeds this limit, the oldest entries are automatically removed until storage is below this limit.\n(Range: 50 ~ 4096 MB, Default: 1024 MB)',
             adjustment: new Gtk.Adjustment({
                 lower: 50,
                 upper: 4096,
@@ -217,8 +217,8 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
 
         // 5. 缩略图最大分辨率护栏
         const maxThumbDimRow = new Adw.SpinRow({
-            title: '图片预览最大尺寸 (像素)\nMax Image Preview Dimension (px)',
-            subtitle: '若图片的任意边长超出此限制，则不会显示预览图。\n（范围：512 ~ 16384 像素，默认 4096 像素）\nIf any dimension of the image exceeds this limit, no thumbnail preview is displayed.\n(Range: 512 ~ 16384 px, Default: 4096 px)',
+            title: '图片预览最大尺寸限制 (像素)\nMax Image Preview Dimension Limit (px)',
+            subtitle: '若图片的任意边长超出此限制，则不会显示预览图。修改此限制时，不会影响已生成的预览图。\n（范围：512 ~ 16384 像素，默认 4096 像素）\nIf any dimension of the image exceeds this limit, no thumbnail preview is displayed. Modifying this limit will not affect already generated previews.\n(Range: 512 ~ 16384 px, Default: 4096 px)',
             adjustment: new Gtk.Adjustment({
                 lower: 512,
                 upper: 16384,
@@ -248,7 +248,7 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
         // 传输停滞超时 (秒)
         const inactivityTimeoutRow = new Adw.SpinRow({
             title: '传输停滞超时 (秒)\nInactivity Timeout (Seconds)',
-            subtitle: '当系统剪贴板所有者向本扩展传输数据时，若传输停滞的时间超出此限制，则自动取消本次传输。\n（范围：1 ~ 60 秒，默认 5 秒）\nWhen the system clipboard owner transfers data to this extension, if the transfer stalls for longer than this limit, the transfer is automatically canceled.\n(Range: 1 ~ 60 sec, Default: 5 sec)',
+            subtitle: '当系统剪贴板所有者向本扩展传输数据时，若传输停滞的时间超出此限制，则自动取消本次传输。修改此配置后，若下一次传输停滞的时间超出此限制，则自动取消本次传输。\n（范围：1 ~ 60 秒，默认 5 秒）\nWhen the system clipboard owner transfers data to this extension, if the transfer stalls for longer than this limit, the transfer is automatically canceled. After modifying this setting, if the next transfer stalls for longer than this limit, it is automatically canceled.\n(Range: 1 ~ 60 sec, Default: 5 sec)',
             adjustment: new Gtk.Adjustment({
                 lower: 1,
                 upper: 60,
@@ -263,7 +263,7 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
         // 总体传输超时 (秒)
         const overallTimeoutRow = new Adw.SpinRow({
             title: '总体传输超时 (秒)\nOverall Transfer Timeout (Seconds)',
-            subtitle: '当系统剪贴板所有者向本扩展传输数据时，若传输的已用时间超出此限制，则自动取消本次传输。\n（范围：2 ~ 300 秒，默认 15 秒）\nWhen the system clipboard owner transfers data to this extension, if elapsed transfer time exceeds this limit, the transfer is automatically canceled.\n(Range: 2 ~ 300 sec, Default: 15 sec)',
+            subtitle: '当系统剪贴板所有者向本扩展传输数据时，若传输的已用时间超出此限制，则自动取消本次传输。修改此配置后，若当前已用传输时间超出此限制，则自动取消本次传输。\n（范围：2 ~ 300 秒，默认 15 秒）\nWhen the system clipboard owner transfers data to this extension, if elapsed transfer time exceeds this limit, the transfer is automatically canceled. After modifying this setting, if currently elapsed transfer time exceeds this limit, the transfer is automatically canceled.\n(Range: 2 ~ 300 sec, Default: 15 sec)',
             adjustment: new Gtk.Adjustment({
                 lower: 2,
                 upper: 300,

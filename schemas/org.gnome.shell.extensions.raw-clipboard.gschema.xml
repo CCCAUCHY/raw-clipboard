@@ -9,26 +9,26 @@
     <key name="max-items" type="i">
       <default>30</default>
       <range min="5" max="1000"/>
-      <summary>Max history items</summary>
+      <summary>Max history items limit</summary>
       <description>Maximum number of clipboard history entries to keep in memory (5 to 1000)</description>
     </key>
     <key name="max-size-mb" type="i">
       <default>50</default>
       <range min="5" max="1024"/>
-      <summary>Max item size in MB</summary>
-      <description>Maximum allowed size in megabytes for a single clipboard entry (up to 1024 MB)</description>
+      <summary>Single item size limit in MB</summary>
+      <description>Maximum allowed size in megabytes for a single clipboard entry (5 to 1024 MB)</description>
     </key>
     <key name="max-total-size-mb" type="i">
       <default>1024</default>
       <range min="50" max="4096"/>
-      <summary>Max total history memory in MB</summary>
+      <summary>Total history memory limit in MB</summary>
       <description>Maximum total memory in megabytes for all clipboard entries combined (50 to 4096 MB)</description>
     </key>
     <key name="max-thumbnail-dimension" type="i">
       <default>4096</default>
       <range min="512" max="16384"/>
-      <summary>Max thumbnail image dimension</summary>
-      <description>Maximum width or height in pixels for generating image thumbnails (larger images display a generic icon)</description>
+      <summary>Max thumbnail image dimension limit</summary>
+      <description>Maximum width or height in pixels for generating image thumbnails (512 to 16384 px)</description>
     </key>
     <key name="inactivity-timeout-sec" type="i">
       <default>5</default>

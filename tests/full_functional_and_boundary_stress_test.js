@@ -708,6 +708,38 @@ await reporter.run('3.5 容量字符串单位边界阶梯测试 (B, KB, MB 格�
     ext.disable();
 });
 
+await reporter.run('3.6 动态修改单项容量限制 (max-size-mb) 时自动清理历史中所有超出新限制的条目', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 初始允许单条 30MB
+    ext._settings.set_int('max-size-mb', 30);
+
+    // 写入条目 1: 15MB
+    const buf15MB = new Uint8Array(15 * 1024 * 1024);
+    buf15MB[0] = 1;
+    const src1 = new MockSelectionSource(['application/octet-stream'], buf15MB);
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src1);
+
+    // 写入条目 2: 8MB
+    const buf8MB = new Uint8Array(8 * 1024 * 1024);
+    buf8MB[0] = 2;
+    const src2 = new MockSelectionSource(['application/octet-stream'], buf8MB);
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src2);
+
+    assert(getExtItemCount(ext) === 2, '两项均正常入库');
+
+    // 动态调小单项容量限制至 10MB (15MB 超过 10MB 必须被自动移除，8MB 保留)
+    ext._settings.set_int('max-size-mb', 10);
+
+    assert(getExtItemCount(ext) === 1, '修改限制后超限的 15MB 条目被自动移除');
+    assert(ext._getEntry(0).size === 8 * 1024 * 1024, '保留符合新限制的 8MB 条目');
+
+    // 恢复默认
+    ext._settings.set_int('max-size-mb', 50);
+    ext.disable();
+});
+
 // ============================================================================
 // SUITE 4: 畸形与损坏数据测试
 // ============================================================================
@@ -2685,6 +2717,46 @@ await reporter.run('11.6 守卫设置 Schema 读写与动态超时生效测试 (
     assert(ext._settings.get_int('inactivity-timeout-sec') === 5, '恢复默认 5 秒成功');
     assert(ext._settings.get_int('overall-timeout-sec') === 15, '恢复默认 15 秒成功');
 
+    ext.disable();
+});
+
+await reporter.run('11.7 在途传输中动态修改总体超时 (overall-timeout-sec) 动态生效测试', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    let streamCancelled = false;
+    class SlowTransferSource {
+        get_mimetypes() { return ['text/plain']; }
+        async read_async(_mime, _cancellable) {
+            return {
+                read_bytes_async(_count, _priority, cancellable) {
+                    return new Promise((resolve, reject) => {
+                        if (cancellable) {
+                            cancellable.connect(() => {
+                                streamCancelled = true;
+                                reject(new GLib.Error(Gio.io_error_quark(), Gio.IOErrorEnum.CANCELLED, 'Cancelled'));
+                            });
+                        }
+                        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 80, () => {
+                            if (cancellable && cancellable.is_cancelled()) return GLib.SOURCE_REMOVE;
+                            resolve(new GLib.Bytes(new Uint8Array(10)));
+                            return GLib.SOURCE_REMOVE;
+                        });
+                    });
+                }
+            };
+        }
+    }
+
+    ext._settings.set_int('overall-timeout-sec', 10);
+    const readPromise = ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new SlowTransferSource());
+
+    // 动态下发设置变更
+    ext._settings.set_int('overall-timeout-sec', 2);
+    assert(ext._settings.get_int('overall-timeout-sec') === 2, '总体超时配置已动态变更为 2 秒');
+
+    await readPromise;
+    ext._settings.reset('overall-timeout-sec');
     ext.disable();
 });
 

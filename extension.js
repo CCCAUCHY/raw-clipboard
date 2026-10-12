@@ -580,6 +580,11 @@ export default class RawClipboardExtension extends Extension {
         this.#activeNonces.clear();
         this._isRestoring = false;
 
+        this._settingsChangedId = -1;
+        this._maxSizeChangedId = -1;
+        this._totalSizeChangedId = -1;
+        this._shortcutChangedId = -1;
+
         // 监听系统剪贴板变化
         this._selection = global.display.get_selection();
         this._selectionOwnerId = this._selection.connect(
@@ -587,9 +592,14 @@ export default class RawClipboardExtension extends Extension {
             this._onClipboardOwnerChanged.bind(this)
         );
 
-        // 监听设置变化（动态裁剪超出上限的内存条目与总容量）
+        // 监听设置变化（动态裁剪超出上限的内存条目、单项容量与总容量）
         this._settingsChangedId = this._settings.connect(
             'changed::max-items',
+            this._enforceLimit.bind(this)
+        );
+
+        this._maxSizeChangedId = this._settings.connect(
+            'changed::max-size-mb',
             this._enforceLimit.bind(this)
         );
 
@@ -649,6 +659,11 @@ export default class RawClipboardExtension extends Extension {
         if (this._settingsChangedId >= 0) {
             this._settings.disconnect(this._settingsChangedId);
             this._settingsChangedId = -1;
+        }
+
+        if (this._maxSizeChangedId >= 0) {
+            this._settings.disconnect(this._maxSizeChangedId);
+            this._maxSizeChangedId = -1;
         }
 
         if (this._totalSizeChangedId >= 0) {
@@ -914,8 +929,10 @@ export default class RawClipboardExtension extends Extension {
         let parentCancelId = 0;
         let watchdogId = 0;
         let overallTimeoutId = 0;
+        let overallSettingsChangedId = 0;
         let inputStream = null;
         let outputStream = null;
+        const overallStartTime = Date.now();
 
         try {
             if (this._cancellable) {
@@ -967,12 +984,41 @@ export default class RawClipboardExtension extends Extension {
             resetWatchdog();
 
             // 守卫 2: 总体硬超时上限 (单次抓取总耗时达硬上限则超时熔断)
-            overallTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, overallTimeoutMs, () => {
-                overallTimeoutId = 0;
-                this._warn(`[RawClipboard] 触发单次抓取总体硬超时 (达 ${overallTimeoutMs}ms 上限)，中止并丢弃当前读取`);
-                readCancellable.cancel();
-                return GLib.SOURCE_REMOVE;
-            });
+            // 且支持动态修改配置：修改此配置后，若当前已用传输时间超出此限制，则自动取消本次传输
+            const scheduleOverallTimeout = (timeoutMs) => {
+                if (overallTimeoutId > 0) {
+                    GLib.source_remove(overallTimeoutId);
+                    overallTimeoutId = 0;
+                }
+                const elapsedMs = Date.now() - overallStartTime;
+                if (elapsedMs >= timeoutMs) {
+                    this._warn(`[RawClipboard] 总体传输超时生效：当前已用时间 (${elapsedMs}ms) 已超出限制 (${timeoutMs}ms)，立即取消当前读取`);
+                    readCancellable.cancel();
+                    return;
+                }
+                const remainingMs = timeoutMs - elapsedMs;
+                overallTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, remainingMs, () => {
+                    overallTimeoutId = 0;
+                    this._warn(`[RawClipboard] 触发单次抓取总体硬超时 (达 ${timeoutMs}ms 上限)，中止并丢弃当前读取`);
+                    readCancellable.cancel();
+                    return GLib.SOURCE_REMOVE;
+                });
+            };
+
+            scheduleOverallTimeout(overallTimeoutMs);
+
+            if (this._settings) {
+                try {
+                    overallSettingsChangedId = this._settings.connect('changed::overall-timeout-sec', () => {
+                        try {
+                            const sec = this._settings.get_int('overall-timeout-sec');
+                            if (sec > 0) {
+                                scheduleOverallTimeout(sec * 1000);
+                            }
+                        } catch (_) {}
+                    });
+                } catch (_) {}
+            }
             const mimeTypes = selectionSource.get_mimetypes ? selectionSource.get_mimetypes() : [];
             this._debug('[RawClipboard] 剪贴板源提供 MIME 格式列表:', JSON.stringify(mimeTypes));
             const core = detectCoreMime(mimeTypes);
@@ -1179,6 +1225,12 @@ export default class RawClipboardExtension extends Extension {
             }
             this._warn('[RawClipboard] Capture error:', e.message);
         } finally {
+            if (overallSettingsChangedId > 0 && this._settings) {
+                try {
+                    this._settings.disconnect(overallSettingsChangedId);
+                } catch (_) {}
+                overallSettingsChangedId = 0;
+            }
             if (watchdogId > 0) {
                 GLib.source_remove(watchdogId);
                 watchdogId = 0;
@@ -1205,11 +1257,28 @@ export default class RawClipboardExtension extends Extension {
     _enforceLimit() {
         const rawMaxItems = this._settings ? this._settings.get_int('max-items') : 30;
         const maxItems = Math.max(5, Math.min(1000, Number.isInteger(rawMaxItems) ? rawMaxItems : 30));
+        const rawMaxMb = this._settings ? this._settings.get_int('max-size-mb') : 50;
+        const maxSingleBytes = Math.max(5, Math.min(1024, Number.isInteger(rawMaxMb) ? rawMaxMb : 50)) * 1024 * 1024;
         const rawTotalMb = this._settings ? this._settings.get_int('max-total-size-mb') : 1024;
         const maxTotalMb = Math.max(50, Math.min(4096, Number.isInteger(rawTotalMb) ? rawTotalMb : 1024));
         const maxTotalBytes = maxTotalMb * 1024 * 1024;
 
-        // 1. 条数上限裁剪 (FIFO)
+        // 1. 单项容量上限裁剪 (修改此限制时，自动移除所有超出此限制的记录)
+        for (let i = this.#history.length - 1; i >= 0; i--) {
+            const item = this.#history[i];
+            const size = typeof item.size === 'number' ? item.size : (item.bytes ? item.bytes.get_size() : 0);
+            if (size > maxSingleBytes) {
+                this._log(`[RawClipboard] 条目超出单项容量限制 (${rawMaxMb} MB)，移除该条目: "${item.preview}" (${size} 字节)`);
+                this.#history.splice(i, 1);
+                this.#radixTree.remove(item);
+                if (this.#deletedEntries.has(item)) {
+                    this.#deletedEntries.delete(item);
+                    this._undoStack = this._undoStack.filter(e => e !== item);
+                }
+            }
+        }
+
+        // 2. 条数上限裁剪 (FIFO: 若剪贴板历史记录数量超出此限制，则自动移除最早的一项记录)
         while (this.#history.length > maxItems) {
             const popped = this.#history.pop();
             if (popped) {
@@ -1222,9 +1291,9 @@ export default class RawClipboardExtension extends Extension {
             }
         }
 
-        // 2. 全局总内存上限裁剪 (FIFO: 超出总配额时从最旧条目开始淘汰)
+        // 3. 全局总内存上限裁剪 (FIFO: 若存储树总大小超出此限制，则自动移除最早的一项或多项记录，直到存储树总大小低于此限制)
         let totalBytes = this.#history.reduce((sum, item) => sum + (typeof item.size === 'number' ? item.size : (item.bytes ? item.bytes.get_size() : 0)), 0);
-        while (this.#history.length > 1 && totalBytes > maxTotalBytes) {
+        while (this.#history.length > 0 && totalBytes > maxTotalBytes) {
             const popped = this.#history.pop();
             if (popped) {
                 this._log(`[RawClipboard] 超过历史总内存上限 (${maxTotalMb} MB)，淘汰最旧条目: "${popped.preview}" (大小: ${popped.size} 字节)`);
