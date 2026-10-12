@@ -868,6 +868,7 @@ export default class RawClipboardExtension extends Extension {
 
     async _onClipboardOwnerChanged(_selection, selectionType, selectionSource) {
         if (selectionType !== Meta.SelectionType.SELECTION_CLIPBOARD) return;
+        const copyTime = Date.now();
         this._debug(`[RawClipboard] 收到剪贴板所有者变更通知 (SelectionType: ${selectionType})`);
         if (!this._cancellable || this._cancellable.is_cancelled()) return;
 
@@ -1070,9 +1071,10 @@ export default class RawClipboardExtension extends Extension {
                 let assembledBytes = (leafNode.collectPathSegments().length === 1 ? leafNode.bytes : null);
                 let cachedChecksum = null;
                 const thisRef = this;
+                let entryTime = copyTime;
 
                 return Object.freeze({
-                    id: `${Date.now()}_${Math.floor(Math.random() * 1000)}`,
+                    id: `${copyTime}_${Math.floor(Math.random() * 1000)}`,
                     type: core.type,
                     mime: core.mime,
                     size: size,
@@ -1118,12 +1120,17 @@ export default class RawClipboardExtension extends Extension {
                     preview: previewInfo.title,
                     subtitle: previewInfo.subtitle,
                     icon: previewInfo.icon,
-                    time: Date.now(),
+                    get time() { return entryTime; },
+                    set time(val) { if (typeof val === 'number') entryTime = val; },
                 });
             });
 
             if (insertResult.isDuplicate) {
                 const existing = insertResult.existingEntry;
+                try {
+                    existing.time = copyTime;
+                } catch (_) {}
+
                 const wasDeleted = this.#deletedEntries.has(existing);
                 if (wasDeleted) {
                     this.#deletedEntries.delete(existing);

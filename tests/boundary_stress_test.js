@@ -955,6 +955,10 @@ await reporter.run('6.7 全局非连续重复复制 LRU 提升测试 (A->B->A �
     // 复制 A
     const srcA1 = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Global-Target-A'));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcA1);
+    const entryA = ext._getEntry(0);
+    const timeA1 = entryA.time;
+
+    await new Promise(r => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 10, () => { r(); return GLib.SOURCE_REMOVE; }));
 
     // 复制 B
     const srcB = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Global-Target-B'));
@@ -964,13 +968,19 @@ await reporter.run('6.7 全局非连续重复复制 LRU 提升测试 (A->B->A �
     assert(getExtItem(ext, 0).title === 'Global-Target-B', '队首为 B');
     assert(getExtItem(ext, 1).title === 'Global-Target-A', '第二项为 A');
 
+    await new Promise(r => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 10, () => { r(); return GLib.SOURCE_REMOVE; }));
+
     // 再次复制 A (非连续复制)
+    const tBeforeA2 = Date.now();
     const srcA2 = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Global-Target-A'));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcA2);
 
     assert(getExtItemCount(ext) === 2, '全局去重生效：总数仍为 2，未产生重复 A');
     assert(getExtItem(ext, 0).title === 'Global-Target-A', 'A 被零拷贝自动提升至队首');
     assert(getExtItem(ext, 1).title === 'Global-Target-B', 'B 顺延至第二项');
+    assert(ext._getEntry(0).id === entryA.id, '队首条目对象引用不变');
+    assert(ext._getEntry(0).time >= tBeforeA2, '重复复制那一刻的时间更新到提升到队首的条目 A');
+    assert(ext._getEntry(0).time > timeA1, 'A 的复制时间已更新至最新复制时刻');
 
     ext.disable();
 });

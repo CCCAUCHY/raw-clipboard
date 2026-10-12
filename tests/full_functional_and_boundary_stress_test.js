@@ -2996,6 +2996,56 @@ await reporter.run('12.8 makeSliceBytes 独立字节切片与母体强引用彻�
     assert(dec.decode(rB.newEntry.getBytes().get_data().subarray(990, 998)) === 'TAIL_TWO', 'EA 淘汰释放后 EB 数据无损');
 });
 
+await reporter.run('12.9 复制时间戳实时记录与重复项目提升队首时间更新测试', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 1. 复制首个条目 A
+    const t0 = Date.now();
+    const srcA = new MockSelectionSource(['text/plain'], new TextEncoder().encode('ITEM-ALPHA'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcA);
+    const itemA = ext._getEntry(0);
+    assert(itemA !== null, '条目 A 正常入库');
+    assert(typeof itemA.time === 'number', 'itemA 包含数字型复制时间戳');
+    assert(itemA.time >= t0, 'itemA.time 准确记录捕获时刻的时间');
+    assert(Object.isFrozen(itemA), 'itemA 对象处于冻结状态');
+
+    // 等待 15ms 保证时间戳递增
+    await new Promise(r => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 15, () => { r(); return GLib.SOURCE_REMOVE; }));
+
+    // 2. 复制第二个条目 B
+    const srcB = new MockSelectionSource(['text/plain'], new TextEncoder().encode('ITEM-BETA'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcB);
+    const itemB = ext._getEntry(0);
+    assert(itemB.time > itemA.time, '后复制的条目 B 时间戳大于 A');
+
+    // 等待 15ms
+    await new Promise(r => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 15, () => { r(); return GLib.SOURCE_REMOVE; }));
+
+    // 3. 再次复制条目 A：触发去重，A 提升至队首，复制时间戳更新为最新时刻
+    const tDupA = Date.now();
+    const srcADup = new MockSelectionSource(['text/plain'], new TextEncoder().encode('ITEM-ALPHA'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcADup);
+    assert(getExtItemCount(ext) === 2, '历史总数保持为 2');
+    assert(ext._getEntry(0).id === itemA.id, '条目 A 被提升至队首');
+    assert(ext._getEntry(0).time >= tDupA, '条目 A 的复制时间更新为重复复制那一刻的时间');
+    assert(ext._getEntry(0).time > itemB.time, '更新后条目 A 的时间大于条目 B');
+    assert(Object.isFrozen(ext._getEntry(0)), '提升至队首后条目仍保持不可篡改与 Object.isFrozen 保护');
+
+    // 等待 15ms
+    await new Promise(r => GLib.timeout_add(GLib.PRIORITY_DEFAULT, 15, () => { r(); return GLib.SOURCE_REMOVE; }));
+
+    // 4. 重复复制当前已在队首的条目 A：再次更新复制时间
+    const tHeadDup = Date.now();
+    const srcAHeadDup = new MockSelectionSource(['text/plain'], new TextEncoder().encode('ITEM-ALPHA'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcAHeadDup);
+    assert(getExtItemCount(ext) === 2, '队首重复复制历史总数保持为 2');
+    assert(ext._getEntry(0).id === itemA.id, '依然为队首条目 A');
+    assert(ext._getEntry(0).time >= tHeadDup, '队首重复复制时复制时间戳更新为当前复制时刻');
+
+    ext.disable();
+});
+
 // ============================================================================
 // 3. 执行最终报告汇算
 // ============================================================================
