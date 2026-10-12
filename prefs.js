@@ -289,11 +289,11 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
             },
             {
                 title: '滚动与翻页\nScroll and Page',
-                subtitle: '当历史超过 8 项时，使用鼠标滚轮上下滚动，或按方向键 ← / →（或 PageUp / PageDown）快速翻页\nWhen history exceeds 8 items, use mouse wheel to scroll, or press Arrow Keys ← / → (or PageUp / PageDown) to flip pages.',
+                subtitle: '当历史超过 8 项时，使用鼠标滚轮上下滚动，或按方向键 ← / →（或 PageUp / PageDown）快速翻页；支持循环翻页，在第一页向上翻页可直达末页，在末页向下翻页可循环返回首页。\nWhen history exceeds 8 items, use mouse wheel to scroll, or press Arrow Keys ← / → (or PageUp / PageDown) to flip pages; supports circular paging where scrolling up on the first page jumps to the last page, and scrolling down on the last page loops back to the first page.',
             },
             {
                 title: '多种排序方式\nMultiple Sort Modes',
-                subtitle: '弹窗顶部提供 4 种排序切换方式（记录顺序、大小、类型、首字母），支持点击或按 Tab 键（Shift+Tab 反向）快捷循环切换；选择首字母排序时，英文条目按 A-Z 优先排列，其他语言排在英文后面按记录顺序排列。\nTop bar provides 4 sorting modes (Record Order, Size, Type, Initial Letter), supporting click or Tab (Shift+Tab) cycling; Initial letter mode sorts English items (A-Z) first, with other languages following in record order.',
+                subtitle: '弹窗顶部提供 4 种排序切换方式（记录顺序、大小、类型、首字母），支持点击顶栏胶囊按钮或按 Tab 键（Shift+Tab 反向）循环切换：\n• 记录顺序：按条目复制时间排序，最新入队或重复复制项排在队首；\n• 大小：按数据容量字节大小由大到小降序排列；\n• 类型：按内容类型分组优先排列（文本优先，其次为网页、图片及自定义未知类型）；\n• 首字母：英文条目按 A-Z 优先排列，非英文字符与其它语言排在英文后面并按记录顺序排列。\nTop bar provides 4 sorting modes (Record Order, Size, Type, Initial Letter), supporting click on top capsules or Tab (Shift+Tab) cycling:\n• Record Order: sorted by copy timestamp, newest items first;\n• Size: descending order by raw byte size;\n• Type: grouped by data type (text, html, image, custom/unknown);\n• Initial Letter: English items sorted A-Z first, followed by others in record order.',
             },
             {
                 title: '复制时间\nCopy Timestamp',

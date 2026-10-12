@@ -2055,7 +2055,7 @@ await reporter.run('9.1 Up / Down 基础与跨页导航测试 (页内步进、�
     ext.disable();
 });
 
-await reporter.run('9.2 Left / Right 离散翻页导航测试 (上一页/下一页与边界限制)', async () => {
+await reporter.run('9.2 Left / Right 离散翻页导航测试 (上一页/下一页与循环翻页)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -2076,9 +2076,13 @@ await reporter.run('9.2 Left / Right 离散翻页导航测试 (上一页/下一�
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Right });
     assert(ext._currentPage === 2, 'Right 翻到第 2 页 (末页)');
 
-    // 在末页按 Right -> 不再越界
+    // 在末页按 Right -> 循环翻页回到第 0 页 (首页)
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Right });
-    assert(ext._currentPage === 2, '末页按 Right 保持在末页');
+    assert(ext._currentPage === 0, '末页按 Right 循环翻页回到第 0 页');
+
+    // 首页按 Left -> 循环翻页到达第 2 页 (末页)
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Left });
+    assert(ext._currentPage === 2, '首页按 Left 循环翻页到达末页');
 
     // Left 翻回上一页
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Left });
@@ -2087,15 +2091,11 @@ await reporter.run('9.2 Left / Right 离散翻页导航测试 (上一页/下一�
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Left });
     assert(ext._currentPage === 0, 'Left 翻回第 0 页');
 
-    // 首页按 Left -> 不越界
-    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Left });
-    assert(ext._currentPage === 0, '首页按 Left 保持在首页');
-
     ext._closePopup();
     ext.disable();
 });
 
-await reporter.run('9.3 PageUp / PageDown 快捷翻页测试', async () => {
+await reporter.run('9.3 PageUp / PageDown 快捷翻页测试 (上一页/下一页与循环翻页)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -2113,7 +2113,15 @@ await reporter.run('9.3 PageUp / PageDown 快捷翻页测试', async () => {
     assert(ext._currentPage === 1, 'PageDown 翻至第 1 页');
     assert(ext._selectedIndex === 3, '保持选中索引 3');
 
-    // PageUp 翻上一页
+    // 末页按 PageDown -> 循环翻至第 0 页
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Page_Down });
+    assert(ext._currentPage === 0, '末页 PageDown 循环翻至第 0 页');
+
+    // 首页按 PageUp -> 循环翻至末页 (第 1 页)
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Page_Up });
+    assert(ext._currentPage === 1, '首页 PageUp 循环翻至末页');
+
+    // PageUp 翻回上一页
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Page_Up });
     assert(ext._currentPage === 0, 'PageUp 翻至第 0 页');
     assert(ext._selectedIndex === 3, '保持选中索引 3');
@@ -2246,6 +2254,20 @@ await reporter.run('9.7 鼠标离散滚轮向上/向下翻页与平滑滚轮阈�
     // 4. 平滑微小位移 (dy = 0.05 <= 0.1) -> 必须被过滤
     ext._popup.emit('scroll-event', makeScrollEvent(Clutter.ScrollDirection.SMOOTH, 0, 0.05));
     assert(ext._currentPage === 1, '微小位移 dy=0.05 安全忽略，不触发误翻页');
+
+    // 等待 200ms
+    GLib.usleep(200000);
+
+    // 5. 末页向下滚动循环翻页回到第 0 页
+    ext._popup.emit('scroll-event', makeScrollEvent(Clutter.ScrollDirection.DOWN));
+    assert(ext._currentPage === 0, '末页向下滚动循环翻页回到第 0 页');
+
+    // 等待 200ms
+    GLib.usleep(200000);
+
+    // 6. 首页向上滚动循环翻页到达末页第 1 页
+    ext._popup.emit('scroll-event', makeScrollEvent(Clutter.ScrollDirection.UP));
+    assert(ext._currentPage === 1, '首页向上滚动循环翻页到达末页第 1 页');
 
     ext._closePopup();
     ext.disable();

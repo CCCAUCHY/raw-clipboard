@@ -1970,12 +1970,11 @@ export default class RawClipboardExtension extends Extension {
                         return Clutter.EVENT_STOP;
                     }
 
-                    const targetPage = this._currentPage + delta;
-                    if (targetPage >= 0 && targetPage < totalPages) {
-                        lastScrollTime = now;
-                        lastScrollDir = delta;
-                        this._setPage(targetPage, this._selectedIndex);
-                    }
+                    // 循环翻页：第一页向上翻至末页，末页向下翻至第一页
+                    const targetPage = (this._currentPage + delta + totalPages) % totalPages;
+                    lastScrollTime = now;
+                    lastScrollDir = delta;
+                    this._setPage(targetPage, this._selectedIndex);
                     return Clutter.EVENT_STOP;
                 }
                 return Clutter.EVENT_PROPAGATE;
@@ -2501,18 +2500,20 @@ export default class RawClipboardExtension extends Extension {
             return Clutter.EVENT_STOP;
         }
 
-        // Left / PageUp: 翻至上一页
+        // Left / PageUp: 翻至上一页 (循环翻页：第一页向上翻至末页)
         if (symbol === Clutter.KEY_Left || symbol === Clutter.KEY_Page_Up) {
-            if (this._currentPage > 0) {
-                this._setPage(this._currentPage - 1, this._selectedIndex);
+            if (totalPages > 1) {
+                const targetPage = (this._currentPage - 1 + totalPages) % totalPages;
+                this._setPage(targetPage, this._selectedIndex);
             }
             return Clutter.EVENT_STOP;
         }
 
-        // Right / PageDown: 翻至下一页
+        // Right / PageDown: 翻至下一页 (循环翻页：末页向下翻至首页)
         if (symbol === Clutter.KEY_Right || symbol === Clutter.KEY_Page_Down) {
-            if (this._currentPage < totalPages - 1) {
-                this._setPage(this._currentPage + 1, this._selectedIndex);
+            if (totalPages > 1) {
+                const targetPage = (this._currentPage + 1) % totalPages;
+                this._setPage(targetPage, this._selectedIndex);
             }
             return Clutter.EVENT_STOP;
         }
