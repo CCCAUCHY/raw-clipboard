@@ -123,6 +123,23 @@ class MockScrollView extends MockActor {
     }
 }
 
+class MockEntry extends MockActor {
+    constructor(props = {}) {
+        super(props);
+        this.text = props.text || '';
+        this.clutter_text = {
+            use_markup: false,
+            set_cursor_position: () => {},
+        };
+    }
+    set_text(t) {
+        this.text = t;
+    }
+    get_text() {
+        return this.text;
+    }
+}
+
 // 设置 Mock 类
 Clutter.Actor = MockActor;
 St.BoxLayout = MockActor;
@@ -130,6 +147,7 @@ St.Button = MockActor;
 St.ScrollView = MockScrollView;
 St.Label = MockLabel;
 St.Icon = MockIcon;
+St.Entry = MockEntry;
 St.Settings = { get: () => ({ reducedMotion: 0 }) };
 St.ReducedMotion = { REDUCE: 1 };
 St.PolicyType = { NEVER: 0, AUTOMATIC: 1 };

@@ -79,6 +79,33 @@ export function formatTime(timestamp) {
     return `${diffDays}天前 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+// 提取键盘按键对应的可输入字符 (过滤控制键与修饰键)
+export function getPrintableChar(event) {
+    if (!event) return null;
+    const symbol = typeof event.get_key_symbol === 'function' ? event.get_key_symbol() : 0;
+    const state = typeof event.get_state === 'function' ? event.get_state() : 0;
+    const isCtrl = Boolean(state & Clutter.ModifierType.CONTROL_MASK);
+    const isAlt = Boolean(state & Clutter.ModifierType.MOD1_MASK);
+    const isSuper = Boolean(state & Clutter.ModifierType.SUPER_MASK);
+    if (isCtrl || isAlt || isSuper) return null;
+
+    if (typeof event.get_key_unicode === 'function') {
+        const u = event.get_key_unicode();
+        if (u >= 32 && u !== 127) return String.fromCodePoint(u);
+    }
+    if (typeof Clutter.keysym_to_unicode === 'function') {
+        const u = Clutter.keysym_to_unicode(symbol);
+        if (u >= 32 && u !== 127) return String.fromCodePoint(u);
+    }
+    if (symbol >= 0x20 && symbol <= 0x7e) {
+        return String.fromCharCode(symbol);
+    }
+    if (symbol >= 0x01000100 && symbol <= 0x0110ffff) {
+        return String.fromCodePoint(symbol - 0x01000000);
+    }
+    return null;
+}
+
 const Utf8Decoder = new TextDecoder();
 
 // 核心 MIME 检测规则
@@ -137,24 +164,24 @@ function generatePreview(type, mime, gBytes, unknownTypeName = null) {
     if (type === 'text' || type === 'html') {
         try {
             const stream = Gio.MemoryInputStream.new_from_bytes(gBytes);
-            let chunk = stream.read_bytes(100, null);
+            let chunk = stream.read_bytes(1000, null);
             let text = Utf8Decoder.decode(chunk);
             // 过滤不可打印控制字符（保留换行 \n, \r 与制表符 \t），再压缩空白
             let clean = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').replace(/\s+/g, ' ').trim();
 
-            // 如果文本的前100字节是空字符，就最多再取10次1kb，当取到不为空字符或次数用尽时停止，停止时是什么就是什么
+            // 如果文本的前1000字节是空字符，就最多再取10次1000字节，当取到不为空字符或次数用尽时停止，停止时是什么就是什么
             let attempts = 0;
             while (!clean && attempts < 10) {
-                const nextChunk = stream.read_bytes(1024, null);
+                const nextChunk = stream.read_bytes(1000, null);
                 if (!nextChunk || nextChunk.get_size() === 0) break;
                 attempts++;
                 text += Utf8Decoder.decode(nextChunk);
                 clean = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').replace(/\s+/g, ' ').trim();
             }
 
-            // 能以文本形式显示：展示前 100 字符预览（全空白文本安全显示为 (空文本)）
+            // 能以文本形式显示：展示前 1000 字符预览（全空白文本安全显示为 (空文本)）
             return {
-                title: clean.length > 100 ? `${clean.slice(0, 100)}…` : (clean || '(空文本)'),
+                title: clean.length > 1000 ? `${clean.slice(0, 1000)}…` : (clean || '(空文本)'),
                 subtitle: `${type === 'html' ? '富文本' : '文本'} · ${sizeStr}`,
                 icon: type === 'html' ? 'text-html-symbolic' : 'edit-copy-symbolic',
             };
@@ -524,6 +551,56 @@ export default class RawClipboardExtension extends Extension {
     // 撤销栈 (LIFO 记录软删除条目)
     _undoStack = [];
 
+    _inSearchMode = false;
+    _searchQuery = '';
+    _searchBar = null;
+    _searchEntry = null;
+
+    get inSearchMode() {
+        return this._inSearchMode;
+    }
+
+    get searchQuery() {
+        return this._searchQuery;
+    }
+
+    _isTextPreviewable(entry) {
+        if (!entry) return false;
+        return entry.type === 'text' || entry.type === 'html' || entry.type === 'files';
+    }
+
+    _enterSearchMode(initialChar = '') {
+        this._inSearchMode = true;
+        this._searchQuery = initialChar;
+        if (this._sortBar) this._sortBar.hide();
+        if (this._searchBar) this._searchBar.show();
+        if (this._searchEntry) {
+            this._searchEntry.set_text(this._searchQuery);
+            if (this._searchEntry.clutter_text) {
+                this._searchEntry.clutter_text.set_cursor_position(-1);
+            }
+        }
+        this._currentPage = 0;
+        this._selectedIndex = 0;
+        this._renderPage();
+        this._updatePageBadge();
+    }
+
+    _exitSearchMode() {
+        if (!this._inSearchMode) return;
+        this._inSearchMode = false;
+        this._searchQuery = '';
+        if (this._searchEntry) {
+            this._searchEntry.set_text('');
+        }
+        if (this._searchBar) this._searchBar.hide();
+        if (this._sortBar) this._sortBar.show();
+        this._currentPage = 0;
+        this._selectedIndex = 0;
+        this._renderPage();
+        this._updatePageBadge();
+    }
+
     _getVisibleEntries() {
         if (this.#deletedEntries.size === 0) {
             return this.#history;
@@ -538,6 +615,21 @@ export default class RawClipboardExtension extends Extension {
     }
 
     _getSortedEntries() {
+        if (this._inSearchMode) {
+            // 搜索模式：字符删光时不退出搜索状态，但显示无匹配项目 (空结果)
+            const query = (this._searchQuery || '').trim().toLowerCase();
+            if (query.length === 0) {
+                return [];
+            }
+            // 只匹配能以文本形式预览的项目，且只匹配预览内容；结果以记录顺序 (FIFO/LRU) 排序
+            const visible = this._getVisibleEntries();
+            return visible.filter(entry => {
+                if (!this._isTextPreviewable(entry)) return false;
+                const preview = (entry.preview || '').toLowerCase();
+                return preview.includes(query);
+            });
+        }
+
         const visible = this._getVisibleEntries();
         if (this._sortMode === 'queue' || visible.length <= 1) {
             return visible;
@@ -1690,6 +1782,8 @@ export default class RawClipboardExtension extends Extension {
 
         this.#deletedEntries.clear();
         this._undoStack = [];
+        this._inSearchMode = false;
+        this._searchQuery = '';
 
         try {
             // 1. 获取鼠标指针位置与显示器
@@ -1727,8 +1821,13 @@ export default class RawClipboardExtension extends Extension {
                 track_hover: true,
             });
 
-            // 阻断弹窗内部的点击事件冒泡，避免点击弹窗内部空白区域时误关闭
-            this._popup.connect('button-press-event', () => Clutter.EVENT_STOP);
+            // 阻断弹窗内部的点击事件冒泡，若处于搜索状态，点击弹窗空白区域优先退出搜索状态
+            this._popup.connect('button-press-event', () => {
+                if (this._inSearchMode) {
+                    this._exitSearchMode();
+                }
+                return Clutter.EVENT_STOP;
+            });
 
             // 计算定位与严格尺寸约束 (直接常驻固定为 8 个条目的尺寸 + 顶部排序栏 + 底部区域: 468px)
             const { popupWidth, popupHeight, contentHeight, pageBarHeight, sortBarHeight } = this._calculateDesiredDimensions(monitor);
@@ -1789,13 +1888,57 @@ export default class RawClipboardExtension extends Extension {
             });
             this._popup.add_child(this._sortBar);
 
+            // 顶部搜索栏容器 (平时隐藏，键入文字时自动替代排序栏)
+            this._searchBar = new St.BoxLayout({
+                style_class: 'raw-clipboard-search-bar',
+                orientation: Clutter.Orientation.HORIZONTAL,
+                reactive: true,
+                x_expand: true,
+                y_expand: false,
+                x_align: Clutter.ActorAlign.FILL,
+                y_align: Clutter.ActorAlign.CENTER,
+                visible: false,
+            });
+            this._searchBar.connect('button-press-event', () => Clutter.EVENT_STOP);
+
+            const searchIcon = new St.Icon({
+                icon_name: 'system-search-symbolic',
+                icon_size: 14,
+                style_class: 'raw-clipboard-search-icon',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+
+            this._searchEntry = new St.Entry({
+                style_class: 'raw-clipboard-search-entry',
+                hint_text: '搜索预览内容...',
+                can_focus: true,
+                reactive: true,
+                x_expand: true,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            if (this._searchEntry.clutter_text) {
+                this._searchEntry.clutter_text.use_markup = false;
+            }
+            this._searchEntry.connect('button-press-event', () => Clutter.EVENT_STOP);
+
+            this._searchBar.add_child(searchIcon);
+            this._searchBar.add_child(this._searchEntry);
+            this._popup.add_child(this._searchBar);
+
             // 列表条目容器：直接放置于弹窗主体内，彻底弃用滚动条，根除不整齐切割
             this._listContainer = new St.BoxLayout({
                 style_class: 'raw-clipboard-list',
                 orientation: Clutter.Orientation.VERTICAL,
+                reactive: true,
                 x_expand: true,
                 y_expand: true,
                 y_align: Clutter.ActorAlign.START,
+            });
+            this._listContainer.connect('button-press-event', () => {
+                if (this._inSearchMode) {
+                    this._exitSearchMode();
+                }
+                return Clutter.EVENT_STOP;
             });
             this._popup.add_child(this._listContainer);
 
@@ -1808,6 +1951,12 @@ export default class RawClipboardExtension extends Extension {
                 y_expand: false,
                 x_align: Clutter.ActorAlign.FILL,
                 y_align: Clutter.ActorAlign.CENTER,
+            });
+            this._pageBar.connect('button-press-event', () => {
+                if (this._inSearchMode) {
+                    this._exitSearchMode();
+                }
+                return Clutter.EVENT_STOP;
             });
 
             // 左下角撤销按钮 (扁平化轻量设计，与页码共享底部区域)
@@ -1891,8 +2040,16 @@ export default class RawClipboardExtension extends Extension {
                 this._sortBar.min_height = sortBarHeight;
                 this._sortBar.max_height = sortBarHeight;
                 this._sortBar.show();
+
+                this._searchBar.set_size(contentWidth, sortBarHeight);
+                this._searchBar.width = contentWidth;
+                this._searchBar.height = sortBarHeight;
+                this._searchBar.min_height = sortBarHeight;
+                this._searchBar.max_height = sortBarHeight;
+                this._searchBar.hide();
             } else {
                 this._sortBar.hide();
+                this._searchBar.hide();
             }
 
             this._listContainer.set_size(contentWidth, contentHeight);
@@ -1991,7 +2148,12 @@ export default class RawClipboardExtension extends Extension {
             this._updateUndoButton();
 
             // 4. 点击空白处关闭弹窗：用户点击全屏遮罩任何非弹窗区域即刻触发关闭
+            // 若处于搜索状态，优先退出搜索状态而不关闭弹窗
             this._container.connect('button-press-event', (_actor, _event) => {
+                if (this._inSearchMode) {
+                    this._exitSearchMode();
+                    return Clutter.EVENT_STOP;
+                }
                 this._closePopup();
                 return Clutter.EVENT_STOP;
             });
@@ -2040,6 +2202,8 @@ export default class RawClipboardExtension extends Extension {
                 this._popup = null;
                 this._sortBar = null;
                 this._sortButtons = null;
+                this._searchBar = null;
+                this._searchEntry = null;
                 this._emptyLabel = null;
                 this._listContainer = null;
                 this._pageBar = null;
@@ -2048,6 +2212,8 @@ export default class RawClipboardExtension extends Extension {
                 this._itemSlots = null;
                 this._itemActors = null;
                 this._sortMode = 'queue';
+                this._inSearchMode = false;
+                this._searchQuery = '';
             }
             if (this._grab) {
                 Main.popModal(this._grab);
@@ -2090,6 +2256,8 @@ export default class RawClipboardExtension extends Extension {
                 this._popup = null;
                 this._sortBar = null;
                 this._sortButtons = null;
+                this._searchBar = null;
+                this._searchEntry = null;
                 this._emptyLabel = null;
                 this._listContainer = null;
                 this._pageBar = null;
@@ -2098,6 +2266,8 @@ export default class RawClipboardExtension extends Extension {
                 this._itemSlots = null;
                 this._itemActors = null; // 切断 UI 控件对 entry 的闭包持有，允许 GC 即时回收
                 this._sortMode = 'queue';
+                this._inSearchMode = false;
+                this._searchQuery = '';
             }
             this._isClosing = false;
         };
@@ -2300,8 +2470,9 @@ export default class RawClipboardExtension extends Extension {
 
             if (!this._emptyLabel) {
                 this._emptyLabel = new St.Label({
-                    text: '剪贴板历史为空',
+                    text: this._inSearchMode ? '无匹配项目' : '剪贴板历史为空',
                     style_class: 'raw-clipboard-empty',
+                    reactive: true,
                     x_expand: true,
                     y_expand: true,
                     x_align: Clutter.ActorAlign.CENTER,
@@ -2310,8 +2481,15 @@ export default class RawClipboardExtension extends Extension {
                 if (this._emptyLabel.clutter_text) {
                     this._emptyLabel.clutter_text.use_markup = false;
                 }
+                this._emptyLabel.connect('button-press-event', () => {
+                    if (this._inSearchMode) {
+                        this._exitSearchMode();
+                    }
+                    return Clutter.EVENT_STOP;
+                });
                 this._listContainer.add_child(this._emptyLabel);
             }
+            this._emptyLabel.text = this._inSearchMode ? '无匹配项目' : '剪贴板历史为空';
             this._emptyLabel.show();
             return;
         }
@@ -2415,8 +2593,12 @@ export default class RawClipboardExtension extends Extension {
     _onKeyPress(event) {
         const symbol = event.get_key_symbol();
 
-        // Esc: 关闭
+        // Esc: 若在搜索模式，先退出搜索状态；否则关闭弹窗
         if (symbol === Clutter.KEY_Escape) {
+            if (this._inSearchMode) {
+                this._exitSearchMode();
+                return Clutter.EVENT_STOP;
+            }
             this._closePopup();
             return Clutter.EVENT_STOP;
         }
@@ -2425,13 +2607,15 @@ export default class RawClipboardExtension extends Extension {
         const SORT_MODES = ['queue', 'size', 'type', 'initial'];
         const isShift = Boolean(state & Clutter.ModifierType.SHIFT_MASK);
 
-        // Tab / Shift+Tab: 循环切换排序方式 (记录顺序 -> 大小 -> 类型 -> 首字母)
+        // Tab / Shift+Tab: 循环切换排序方式 (记录顺序 -> 大小 -> 类型 -> 首字母) - 仅在非搜索模式下生效
         if (symbol === Clutter.KEY_Tab || symbol === Clutter.KEY_ISO_Left_Tab) {
-            const curIdx = SORT_MODES.indexOf(this._sortMode);
-            const nextIdx = (isShift || symbol === Clutter.KEY_ISO_Left_Tab)
-                ? (curIdx - 1 + SORT_MODES.length) % SORT_MODES.length
-                : (curIdx + 1) % SORT_MODES.length;
-            this._setSortMode(SORT_MODES[nextIdx]);
+            if (!this._inSearchMode) {
+                const curIdx = SORT_MODES.indexOf(this._sortMode);
+                const nextIdx = (isShift || symbol === Clutter.KEY_ISO_Left_Tab)
+                    ? (curIdx - 1 + SORT_MODES.length) % SORT_MODES.length
+                    : (curIdx + 1) % SORT_MODES.length;
+                this._setSortMode(SORT_MODES[nextIdx]);
+            }
             return Clutter.EVENT_STOP;
         }
 
@@ -2463,39 +2647,100 @@ export default class RawClipboardExtension extends Extension {
             }
         }
 
+        // BackSpace 处理：
+        // 搜索状态下：删除搜索词末尾字符；删光时不退出搜索状态，依然保留搜索框但显示无匹配项目
+        // 非搜索状态下：删除当前选中的历史记录条目
+        if (symbol === Clutter.KEY_BackSpace) {
+            if (this._inSearchMode) {
+                if (this._searchQuery.length > 0) {
+                    this._searchQuery = this._searchQuery.slice(0, -1);
+                    if (this._searchEntry) {
+                        this._searchEntry.set_text(this._searchQuery);
+                        if (this._searchEntry.clutter_text) {
+                            this._searchEntry.clutter_text.set_cursor_position(-1);
+                        }
+                    }
+                    this._currentPage = 0;
+                    this._selectedIndex = 0;
+                    this._renderPage();
+                    this._updatePageBadge();
+                }
+                return Clutter.EVENT_STOP;
+            } else {
+                const currentEntries = this._getSortedEntries();
+                const globalIndex = this._currentPage * 8 + this._selectedIndex;
+                if (globalIndex >= 0 && globalIndex < currentEntries.length) {
+                    this._deleteEntry(currentEntries[globalIndex]);
+                }
+                return Clutter.EVENT_STOP;
+            }
+        }
+
+        // Delete 按键：仅在非搜索模式下执行删除，防止在搜索输入期间误删条目
+        if (symbol === Clutter.KEY_Delete) {
+            if (!this._inSearchMode) {
+                const currentEntries = this._getSortedEntries();
+                const globalIndex = this._currentPage * 8 + this._selectedIndex;
+                if (globalIndex >= 0 && globalIndex < currentEntries.length) {
+                    this._deleteEntry(currentEntries[globalIndex]);
+                }
+            }
+            return Clutter.EVENT_STOP;
+        }
+
+        // Enter / KP_Enter / Space: 确认选中并恢复
+        // 注意：搜索状态下 Space 作为输入字符搜索，不可用于确认恢复
+        const isConfirmKey = symbol === Clutter.KEY_Return ||
+            symbol === Clutter.KEY_KP_Enter ||
+            (!this._inSearchMode && symbol === Clutter.KEY_space);
+
+        if (isConfirmKey) {
+            const currentEntries = this._getSortedEntries();
+            const totalCount = currentEntries.length;
+            const globalIndex = this._currentPage * 8 + this._selectedIndex;
+            if (globalIndex >= 0 && globalIndex < totalCount) {
+                this._restoreEntry(currentEntries[globalIndex]);
+            }
+            this._closePopup();
+            return Clutter.EVENT_STOP;
+        }
+
+        // 方向键与翻页键导航
         const currentEntries = this._getSortedEntries();
         const totalCount = currentEntries.length;
-        if (totalCount === 0) return Clutter.EVENT_STOP;
-
-        const totalPages = Math.ceil(totalCount / 8);
+        const totalPages = Math.max(1, Math.ceil(totalCount / 8));
         const startIndex = this._currentPage * 8;
-        const pageCount = Math.min(8, totalCount - startIndex);
+        const pageCount = Math.max(0, Math.min(8, totalCount - startIndex));
 
         // Up: 上一项 (若在当前页首项，跨页滚动至上一页尾项)
         if (symbol === Clutter.KEY_Up) {
-            if (this._selectedIndex > 0) {
-                this._setSelectedIndex(this._selectedIndex - 1);
-            } else if (this._currentPage > 0) {
-                const prevPageCount = 8;
-                this._setPage(this._currentPage - 1, prevPageCount - 1);
-            } else if (totalPages > 1) {
-                // 第一页首项循环至末页尾项
-                const lastPage = totalPages - 1;
-                const lastPageCount = totalCount - lastPage * 8;
-                this._setPage(lastPage, lastPageCount - 1);
+            if (totalCount > 0) {
+                if (this._selectedIndex > 0) {
+                    this._setSelectedIndex(this._selectedIndex - 1);
+                } else if (this._currentPage > 0) {
+                    const prevPageCount = 8;
+                    this._setPage(this._currentPage - 1, prevPageCount - 1);
+                } else if (totalPages > 1) {
+                    // 第一页首项循环至末页尾项
+                    const lastPage = totalPages - 1;
+                    const lastPageCount = totalCount - lastPage * 8;
+                    this._setPage(lastPage, lastPageCount - 1);
+                }
             }
             return Clutter.EVENT_STOP;
         }
 
         // Down: 下一项 (若在当前页尾项，跨页滚动至下一页首项)
         if (symbol === Clutter.KEY_Down) {
-            if (this._selectedIndex < pageCount - 1) {
-                this._setSelectedIndex(this._selectedIndex + 1);
-            } else if (this._currentPage < totalPages - 1) {
-                this._setPage(this._currentPage + 1, 0);
-            } else if (totalPages > 1) {
-                // 末页尾项循环至第一页首项
-                this._setPage(0, 0);
+            if (totalCount > 0) {
+                if (this._selectedIndex < pageCount - 1) {
+                    this._setSelectedIndex(this._selectedIndex + 1);
+                } else if (this._currentPage < totalPages - 1) {
+                    this._setPage(this._currentPage + 1, 0);
+                } else if (totalPages > 1) {
+                    // 末页尾项循环至第一页首项
+                    this._setPage(0, 0);
+                }
             }
             return Clutter.EVENT_STOP;
         }
@@ -2518,23 +2763,26 @@ export default class RawClipboardExtension extends Extension {
             return Clutter.EVENT_STOP;
         }
 
-        // Enter: 确认选中并恢复
-        if (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter || symbol === Clutter.KEY_space) {
-            const globalIndex = this._currentPage * 8 + this._selectedIndex;
-            if (globalIndex >= 0 && globalIndex < totalCount) {
-                this._restoreEntry(currentEntries[globalIndex]);
+        // 字符输入：键入任何文字时自动出现替代排序选项卡；已在搜索状态时追加输入
+        const char = getPrintableChar(event);
+        if (char) {
+            if (!this._inSearchMode) {
+                this._enterSearchMode(char);
+                return Clutter.EVENT_STOP;
+            } else {
+                this._searchQuery += char;
+                if (this._searchEntry) {
+                    this._searchEntry.set_text(this._searchQuery);
+                    if (this._searchEntry.clutter_text) {
+                        this._searchEntry.clutter_text.set_cursor_position(-1);
+                    }
+                }
+                this._currentPage = 0;
+                this._selectedIndex = 0;
+                this._renderPage();
+                this._updatePageBadge();
+                return Clutter.EVENT_STOP;
             }
-            this._closePopup();
-            return Clutter.EVENT_STOP;
-        }
-
-        // Delete / BackSpace: 删除当前项
-        if (symbol === Clutter.KEY_Delete || symbol === Clutter.KEY_BackSpace) {
-            const globalIndex = this._currentPage * 8 + this._selectedIndex;
-            if (globalIndex >= 0 && globalIndex < totalCount) {
-                this._deleteEntry(currentEntries[globalIndex]);
-            }
-            return Clutter.EVENT_STOP;
         }
 
         return Clutter.EVENT_PROPAGATE;

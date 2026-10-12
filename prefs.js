@@ -296,6 +296,10 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
                 subtitle: '弹窗顶部提供 4 种排序切换方式（记录顺序、大小、类型、首字母），支持点击顶栏胶囊按钮或按 Tab 键（Shift+Tab 反向）循环切换：\n• 记录顺序：按条目复制时间排序，最新入队或重复复制项排在队首；\n• 大小：按数据容量字节大小由大到小降序排列；\n• 类型：按内容类型分组优先排列（文本优先，其次为网页、图片及自定义未知类型）；\n• 首字母：英文条目按 A-Z 优先排列，非英文字符与其它语言排在英文后面并按记录顺序排列。\nTop bar provides 4 sorting modes (Record Order, Size, Type, Initial Letter), supporting click on top capsules or Tab (Shift+Tab) cycling:\n• Record Order: sorted by copy timestamp, newest items first;\n• Size: descending order by raw byte size;\n• Type: grouped by data type (text, html, image, custom/unknown);\n• Initial Letter: English items sorted A-Z first, followed by others in record order.',
             },
             {
+                title: '预览内搜索\nSearch Previews',
+                subtitle: '在弹窗中直接键入任意字符，将自动唤出搜索栏替代排序选项卡，实时匹配文本、富文本和文件列表的预览内容：\n• 关键字匹配：仅对能以文本形式预览的项目按预览内容进行关键字搜索，结果按记录顺序排列；\n• 退出搜索：按 Esc 键、或鼠标点击弹窗外任意区域、或点击弹窗内非历史记录项目区域，将优先退出搜索状态回到完整列表；\n• 删光搜索词：BackSpace 删光字符时不会退出搜索状态，而是显示“无匹配项目”；\n• 循环翻页与恢复：搜索结果列表依然完整支持 ↑ / ↓ 导航、Enter 键恢复与循环翻页。\nType any character in the popup to automatically reveal the search bar replacing sort tabs, matching preview text in real-time:\n• Keyword Matching: searches preview content of text, html, and file lists; results sorted in record order;\n• Exit Search: press Esc or click outside or non-item areas to exit search mode and return to full history;\n• Cleared Input: erasing all characters stays in search mode showing "No matching items";\n• Navigation: search results fully support ↑ / ↓ navigation, Enter to restore, and circular pagination.',
+            },
+            {
                 title: '复制时间\nCopy Timestamp',
                 subtitle: '每个历史条目右侧均记录并显示复制那一刻的时间（当天显示时分秒，跨天显示 n天前 时分）；若重复复制相同内容，将自动更新其复制时间并提升至队首。\nEach item records and displays its exact copy timestamp on the right (HH:mm:ss for today, n days ago HH:mm for past days); duplicate copies automatically update their copy timestamp and promote to the top.',
             },
@@ -305,7 +309,7 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
             },
             {
                 title: '关闭窗口\nClose Window',
-                subtitle: '按 Esc 键或点击窗口外部任意区域即可随时关闭\nPress Esc or click outside the window to close at any time.',
+                subtitle: '按 Esc 键或点击窗口外部任意区域即可随时关闭（若处于搜索状态，则优先退出搜索状态）\nPress Esc or click outside the window to close at any time (exits search mode first if active).',
             },
             {
                 title: '隐私与安全保护\nPrivacy and Security',

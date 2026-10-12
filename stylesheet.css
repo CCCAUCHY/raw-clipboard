@@ -46,6 +46,38 @@
     font-size: 0.82em;
 }
 
+/* 顶部搜索栏 (高度28px，平时隐藏，键入文字时自动替代排序栏) */
+.raw-clipboard-search-bar {
+    height: 28px;
+    min-height: 28px;
+    max-height: 28px;
+    width: 408px;
+    spacing: 6px;
+    margin-bottom: 2px;
+    padding: 0 8px;
+    border-radius: 6px;
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+.raw-clipboard-search-icon {
+    icon-size: 14px;
+    color: rgba(255, 255, 255, 0.55);
+}
+
+.raw-clipboard-search-entry {
+    color: #ffffff;
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+    padding: 0;
+    font-size: 0.88em;
+}
+
+.raw-clipboard-search-entry:focus {
+    border: none;
+    box-shadow: none;
+}
+
 .raw-clipboard-list {
     spacing: 2px;
     width: 408px;

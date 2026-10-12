@@ -169,6 +169,23 @@ class MockBoxLayout extends MockActor {
     }
 }
 
+class MockEntry extends MockActor {
+    constructor(props = {}) {
+        super(props);
+        this.text = props.text || '';
+        this.clutter_text = {
+            use_markup: false,
+            set_cursor_position: () => {},
+        };
+    }
+    set_text(t) {
+        this.text = t;
+    }
+    get_text() {
+        return this.text;
+    }
+}
+
 // 设置 Mock 类
 Clutter.Actor = MockActor;
 St.BoxLayout = MockBoxLayout;
@@ -176,6 +193,7 @@ St.Button = MockActor;
 St.ScrollView = MockScrollView;
 St.Label = MockLabel;
 St.Icon = MockIcon;
+St.Entry = MockEntry;
 St.Settings = { get: () => ({ reducedMotion: 0 }) };
 St.ReducedMotion = { REDUCE: 1 };
 St.PolicyType = { NEVER: 0, AUTOMATIC: 1 };
@@ -592,28 +610,35 @@ await reporter.run('2.5 空 URI 列表文件复制行为测试 (text/uri-list �
     ext.disable();
 });
 
-await reporter.run('2.6 前100字节为空白时的10次重试探查机制测试 (Gio.MemoryInputStream 零拷贝按需探查)', async () => {
+await reporter.run('2.6 统一1000字节预览与递进探查机制测试 (前1000字节为空白时最多10次重试探查)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
-    // 1. 前 150 字节为空格，后续为有效正文 (旧版截断 100 字节会误判为 (空文本))
+    // 1. 前 150 字节为空格，后续为有效正文 (初始 1000 字节即可覆盖并安全 trim 提取)
     const leading150Spaces = ' '.repeat(150) + 'Recovered Valid Text';
     const src1 = new MockSelectionSource(['text/plain'], new TextEncoder().encode(leading150Spaces));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src1);
     let item = getExtItem(ext, 0);
-    assert(item.title === 'Recovered Valid Text', `前150字节为空格时应触发后续重试并正确提取正文，实际: ${item.title}`);
+    assert(item.title === 'Recovered Valid Text', `前150字节为空格时应直接正确提取正文，实际: ${item.title}`);
 
-    // 2. 前 2500 字节为空白，重试 3 次后成功提取正文
-    const leading2500Spaces = ' '.repeat(2500) + 'Deep Content';
-    const src2 = new MockSelectionSource(['text/plain'], new TextEncoder().encode(leading2500Spaces));
+    // 2. 前 1500 字节为空白，第 1 次递进重试 (累积 2000 字节) 后成功提取正文
+    const leading1500Spaces = ' '.repeat(1500) + 'Progressive 1500 Content';
+    const src2 = new MockSelectionSource(['text/plain'], new TextEncoder().encode(leading1500Spaces));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src2);
+    item = getExtItem(ext, 0);
+    assert(item.title === 'Progressive 1500 Content', `前1500字节空白应通过递进重试提取，实际: ${item.title}`);
+
+    // 3. 前 2500 字节为空白，重试 2 次后成功提取正文
+    const leading2500Spaces = ' '.repeat(2500) + 'Deep Content';
+    const src3 = new MockSelectionSource(['text/plain'], new TextEncoder().encode(leading2500Spaces));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src3);
     item = getExtItem(ext, 0);
     assert(item.title === 'Deep Content', `前2500字节空白应重试提取，实际: ${item.title}`);
 
-    // 3. 超过 10 次上限（>10100 字节）全空白字符，安全收敛为 (空文本)
+    // 4. 超过 10 次上限（>11000 字节）全空白字符，安全收敛为 (空文本)
     const tooManySpaces = ' '.repeat(20000);
-    const src3 = new MockSelectionSource(['text/plain'], new TextEncoder().encode(tooManySpaces));
-    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src3);
+    const src4 = new MockSelectionSource(['text/plain'], new TextEncoder().encode(tooManySpaces));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src4);
     item = getExtItem(ext, 0);
     assert(item.title === '(空文本)', `超过10次重试后全空白字符应优雅降级为 (空文本)，实际: ${item.title}`);
 
@@ -3364,6 +3389,207 @@ await reporter.run('12.12 四种排序方式 (记录顺序/大小/类型/首字�
     assert(ext._itemSlots[0].iconActor === slot0Icon, '重新渲染后 Icon 材质完全复用，杜绝销毁重建闪烁');
 
     ext._closePopup();
+    ext.disable();
+});
+
+// ============================================================================
+// SUITE 13: 预览内搜索与按键交互自动化测试 (In-Preview Search & UI Interaction)
+// ============================================================================
+reporter.suite('13. 预览内搜索与按键交互自动化测试 (键入唤出、仅匹配文本预览、删光无匹配、空白退出、循环翻页)');
+
+await reporter.run('13.1 键入文字自动唤出搜索栏替代排序栏，搜索框平时隐藏', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 写入条目
+    const src1 = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Hello World'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src1);
+
+    ext._openPopup();
+    assert(ext._inSearchMode === false, '弹窗打开时默认不在搜索状态');
+    assert(ext._sortBar.visible === true, '排序栏默认可见');
+    assert(ext._searchBar.visible === false, '搜索栏默认隐藏');
+
+    // 键入字符 'h'
+    const event = {
+        get_key_symbol: () => 104, // 'h'
+        get_state: () => 0,
+        get_key_unicode: () => 104,
+    };
+    const res = ext._onKeyPress(event);
+    assert(res === Clutter.EVENT_STOP, '键入字符消费事件并进入搜索');
+    assert(ext._inSearchMode === true, '进入搜索状态');
+    assert(ext.searchQuery === 'h', '搜索词为 h');
+    assert(ext._searchEntry.text === 'h', '搜索输入框显示 h');
+    assert(ext._searchBar.visible === true, '搜索栏变为可见');
+    assert(ext._sortBar.visible === false, '排序栏被隐藏替代');
+
+    ext._closePopup();
+    ext.disable();
+});
+
+await reporter.run('13.2 关键字仅匹配能以文本形式预览的项目 (text, html, files)，位图与未知类型绝不匹配，结果以记录顺序排序', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 1. text: "Apple juice"
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['text/plain'], new TextEncoder().encode('Apple juice')));
+    // 2. html: "<b>Super Apple pie</b>"
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['text/html'], new TextEncoder().encode('<b>Super Apple pie</b>')));
+    // 3. files: "file:///home/user/apple_note.txt"
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['text/uri-list'], new TextEncoder().encode('file:///home/user/apple_note.txt\n')));
+    // 4. image: PNG 位图 (即使文件名或元数据有 apple，类型为 image 绝不匹配)
+    const pb = new GdkPixbuf.Pixbuf({ colorspace: GdkPixbuf.Colorspace.RGB, has_alpha: true, bits_per_sample: 8, width: 32, height: 32 });
+    pb.fill(0xff0000ff);
+    const [, pngBuf] = pb.save_to_bufferv('png', [], []);
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['image/png'], pngBuf));
+    // 5. raw: 未知类型
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['application/x-apple-raw'], new Uint8Array([1, 2, 3])));
+
+    ext._openPopup();
+    assert(ext._getVisibleEntries().length === 5, '全部 5 项入库');
+
+    // 键入 'apple'
+    ext._enterSearchMode('apple');
+    const matched = ext._getSortedEntries();
+    assert(matched.length === 3, `仅匹配 3 项能以文本预览的项目，实际: ${matched.length}`);
+    // 结果必须以记录顺序 (LRU 队首到队尾: files -> html -> text) 排序
+    assert(matched[0].type === 'files', '第 1 项为 files (按最新记录顺序)');
+    assert(matched[1].type === 'html', '第 2 项为 html');
+    assert(matched[2].type === 'text', '第 3 项为 text');
+
+    // 确认位图与未知类型未被匹配
+    assert(!matched.some(e => e.type === 'image'), '位图类型绝不匹配');
+    assert(!matched.some(e => e.type === 'raw'), '未知类型绝不匹配');
+
+    ext._closePopup();
+    ext.disable();
+});
+
+await reporter.run('13.3 搜索框字符删光时不退出搜索状态，但显示无匹配项目，而不是显示全部项目', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['text/plain'], new TextEncoder().encode('Sample Text')));
+    ext._openPopup();
+
+    // 键入 's'
+    ext._onKeyPress({ get_key_symbol: () => 115, get_state: () => 0, get_key_unicode: () => 115 });
+    assert(ext._inSearchMode === true, '进入搜索状态');
+    assert(ext._getSortedEntries().length === 1, '匹配 1 项');
+
+    // 按 BackSpace 删光字符
+    const backspaceEvent = { get_key_symbol: () => Clutter.KEY_BackSpace, get_state: () => 0 };
+    ext._onKeyPress(backspaceEvent);
+
+    assert(ext._inSearchMode === true, '字符删光时依然处于搜索状态，绝不退出搜索');
+    assert(ext.searchQuery === '', '搜索词变为空');
+    assert(ext._searchEntry.text === '', '搜索输入框为空');
+    assert(ext._getSortedEntries().length === 0, '搜索词为空时返回 0 项 (空列表)');
+    assert(ext._emptyLabel && ext._emptyLabel.visible === true, '显示空列表标签');
+    assert(ext._emptyLabel.text === '无匹配项目', `空标签文本应为 无匹配项目，实际: ${ext._emptyLabel.text}`);
+
+    ext._closePopup();
+    ext.disable();
+});
+
+await reporter.run('13.4 按 Esc 键先退出搜索状态回到完整列表且不关闭弹窗，再次按 Esc 才关闭弹窗', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['text/plain'], new TextEncoder().encode('Item 1')));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['text/plain'], new TextEncoder().encode('Item 2')));
+    ext._openPopup();
+
+    ext._enterSearchMode('Item');
+    assert(ext._inSearchMode === true, '处于搜索状态');
+
+    // 第一次按 Esc: 退出搜索状态
+    const escEvent = { get_key_symbol: () => Clutter.KEY_Escape, get_state: () => 0 };
+    const res1 = ext._onKeyPress(escEvent);
+    assert(res1 === Clutter.EVENT_STOP, 'Esc 消费事件');
+    assert(ext._inSearchMode === false, '已退出搜索状态');
+    assert(ext._container !== null, '弹窗依然保持打开，未关闭');
+    assert(ext._sortBar.visible === true, '排序栏恢复显示');
+    assert(ext._searchBar.visible === false, '搜索栏隐藏');
+    assert(ext._getSortedEntries().length === 2, '恢复显示全部历史记录');
+
+    // 第二次按 Esc: 关闭弹窗
+    const res2 = ext._onKeyPress(escEvent);
+    assert(res2 === Clutter.EVENT_STOP, '第二次 Esc 消费事件');
+    assert(ext._container === null, '弹窗已关闭');
+
+    ext.disable();
+});
+
+await reporter.run('13.5 鼠标点击弹窗外或弹窗内非历史记录项目区域，先退出搜索状态而不关闭弹窗', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['text/plain'], new TextEncoder().encode('Note A')));
+    ext._openPopup();
+
+    // 1. 点击弹窗全屏遮罩空白处 (弹窗外)
+    ext._enterSearchMode('Note');
+    assert(ext._inSearchMode === true, '处于搜索状态');
+    ext._container.emit('button-press-event', { get_button: () => 1 });
+    assert(ext._inSearchMode === false, '点击弹窗外先退出搜索状态');
+    assert(ext._container !== null, '弹窗未关闭');
+
+    // 2. 点击弹窗背景主体 (弹窗内非条目区域)
+    ext._enterSearchMode('Note');
+    assert(ext._inSearchMode === true, '处于搜索状态');
+    ext._popup.emit('button-press-event', { get_button: () => 1 });
+    assert(ext._inSearchMode === false, '点击弹窗背景先退出搜索状态');
+    assert(ext._container !== null, '弹窗未关闭');
+
+    // 3. 点击底部页码栏
+    ext._enterSearchMode('Note');
+    assert(ext._inSearchMode === true, '处于搜索状态');
+    ext._pageBar.emit('button-press-event', { get_button: () => 1 });
+    assert(ext._inSearchMode === false, '点击底部页码栏先退出搜索状态');
+    assert(ext._container !== null, '弹窗未关闭');
+
+    ext._closePopup();
+    ext.disable();
+});
+
+await reporter.run('13.6 搜索状态支持循环翻页，结果以记录顺序排序，Enter 恢复选中项', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 生成 20 个包含 "TargetMatch" 的条目
+    for (let i = 1; i <= 20; i++) {
+        const text = `TargetMatch Item ${i}`;
+        await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['text/plain'], new TextEncoder().encode(text)));
+    }
+    // 生成 5 个不匹配的条目
+    for (let i = 1; i <= 5; i++) {
+        await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['text/plain'], new TextEncoder().encode(`Other ${i}`)));
+    }
+
+    ext._openPopup();
+    ext._enterSearchMode('targetmatch');
+
+    const matches = ext._getSortedEntries();
+    assert(matches.length === 20, '精准匹配 20 项');
+    // 总页数: ceil(20 / 8) = 3 页 (第0页: 8项, 第1页: 8项, 第2页: 4项)
+    assert(ext._currentPage === 0, '初始位于第 0 页');
+
+    // 循环翻页测试：第 0 页按 Left / PageUp 翻至最后一页 (第 2 页)
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Left, get_state: () => 0 });
+    assert(ext._currentPage === 2, '第 0 页向上循环翻页至末页 (第 2 页)');
+
+    // 末页按 Right / PageDown 翻至第 0 页
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Right, get_state: () => 0 });
+    assert(ext._currentPage === 0, '末页向下循环翻页至首页 (第 0 页)');
+
+    // Enter 恢复选中条目并关闭弹窗
+    ext._selectedIndex = 0;
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Return, get_state: () => 0 });
+    assert(ext._container === null, 'Enter 恢复后弹窗关闭');
+    assert(ext._isRestoring === false, '恢复流程顺利结束');
+
     ext.disable();
 });
 
