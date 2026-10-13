@@ -610,33 +610,33 @@ await reporter.run('2.5 空 URI 列表文件复制行为测试 (text/uri-list �
     ext.disable();
 });
 
-await reporter.run('2.6 统一4KB预览与单循环按需探查机制测试 (最多10次循环，遇到非空文本即跳出)', async () => {
+await reporter.run('2.6 统一64KB预览与单循环按需探查机制测试 (最多10次循环，遇到非空文本即跳出)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
-    // 1. 前 150 字节为空格，后续为有效正文 (第 1 次循环 4KB 即可覆盖并立即跳出)
+    // 1. 前 150 字节为空格，后续为有效正文 (第 1 次循环 64KB 即可覆盖并立即跳出)
     const leading150Spaces = ' '.repeat(150) + 'Recovered Valid Text';
     const src1 = new MockSelectionSource(['text/plain'], new TextEncoder().encode(leading150Spaces));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src1);
     let item = getExtItem(ext, 0);
     assert(item.title === 'Recovered Valid Text', `前150字节为空格时应直接正确提取正文，实际: ${item.title}`);
 
-    // 2. 前 6000 字节为空白 (超过第 1 次 4KB 边界)，第 2 次循环 (累计 8KB) 成功提取正文
-    const leading6000Spaces = ' '.repeat(6000) + 'Progressive 6000 Content';
-    const src2 = new MockSelectionSource(['text/plain'], new TextEncoder().encode(leading6000Spaces));
+    // 2. 前 80000 字节为空白 (超过第 1 次 64KB/65536B 边界)，第 2 次循环 (累计 128KB) 成功提取正文
+    const leading80kSpaces = ' '.repeat(80000) + 'Progressive 80k Content';
+    const src2 = new MockSelectionSource(['text/plain'], new TextEncoder().encode(leading80kSpaces));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src2);
     item = getExtItem(ext, 0);
-    assert(item.title === 'Progressive 6000 Content', `前6000字节空白应通过第2次循环成功提取，实际: ${item.title}`);
+    assert(item.title === 'Progressive 80k Content', `前80000字节空白应通过第2次循环成功提取，实际: ${item.title}`);
 
-    // 3. 前 20000 字节为空白，第 5 次循环后成功提取正文
-    const leading20000Spaces = ' '.repeat(20000) + 'Deep Content 20k';
-    const src3 = new MockSelectionSource(['text/plain'], new TextEncoder().encode(leading20000Spaces));
+    // 3. 前 300000 字节为空白，第 5 次循环后成功提取正文
+    const leading300kSpaces = ' '.repeat(300000) + 'Deep Content 300k';
+    const src3 = new MockSelectionSource(['text/plain'], new TextEncoder().encode(leading300kSpaces));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src3);
     item = getExtItem(ext, 0);
-    assert(item.title === 'Deep Content 20k', `前20000字节空白应循环提取，实际: ${item.title}`);
+    assert(item.title === 'Deep Content 300k', `前300000字节空白应循环提取，实际: ${item.title}`);
 
-    // 4. 超过 10 次上限（>40960 字节，例如 50000 字节）全空白字符，安全收敛为 (空文本)
-    const tooManySpaces = ' '.repeat(50000);
+    // 4. 超过 10 次上限（>640KB，例如 700000 字节）全空白字符，安全收敛为 (空文本)
+    const tooManySpaces = ' '.repeat(700000);
     const src4 = new MockSelectionSource(['text/plain'], new TextEncoder().encode(tooManySpaces));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src4);
     item = getExtItem(ext, 0);

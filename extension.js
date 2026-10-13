@@ -164,7 +164,7 @@ function generatePreview(type, mime, gBytes, unknownTypeName = null) {
     if (type === 'text' || type === 'html') {
         try {
             const stream = Gio.MemoryInputStream.new_from_bytes(gBytes);
-            const CHUNK_SIZE = 4096; // 4KB 甜点大小：既能充分覆盖中英文1000字符预览，又具备微秒级极速处理能力
+            const CHUNK_SIZE = 64 * 1024; // 64KB (65536 字节)：吞吐性价比极高，单次仅需零点几毫秒即可大跨步捕获深层文本
             let text = '';
             let clean = '';
 
