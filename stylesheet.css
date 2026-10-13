@@ -111,6 +111,13 @@
     icon-size: 20px;
     margin-right: 6px;
     color: rgba(255, 255, 255, 0.85);
+    border-radius: 6px;
+    transition-duration: 100ms;
+}
+
+.raw-clipboard-item-icon:hover {
+    background-color: rgba(255, 255, 255, 0.16);
+    color: #ffffff;
 }
 
 /* 图片缩略图微衬底 */
@@ -120,6 +127,12 @@
     border-radius: 6px;
     border: 1px solid rgba(255, 255, 255, 0.1);
     background-color: rgba(0, 0, 0, 0.25);
+    transition-duration: 100ms;
+}
+
+.raw-clipboard-item-thumb:hover {
+    background-color: rgba(255, 255, 255, 0.2);
+    border-color: rgba(255, 255, 255, 0.3);
 }
 
 .raw-clipboard-item-content {

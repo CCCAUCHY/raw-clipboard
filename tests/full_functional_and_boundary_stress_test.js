@@ -3733,7 +3733,7 @@ await reporter.run('13.6 搜索状态支持循环翻页，结果以记录顺序�
     ext.disable();
 });
 
-await reporter.run('13.7 纯键盘直接响应与剪贴板文本粘贴实时触发检索，禁用输入法根除遮挡与首字母遗漏缺陷', async () => {
+await reporter.run('13.7 纯键盘直接响应与条目左侧图标悬停搜索/点击带入预览覆盖检索，彻底根除输入法遮挡与粘贴缺陷', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -3758,31 +3758,59 @@ await reporter.run('13.7 纯键盘直接响应与剪贴板文本粘贴实时触�
     assert(matched.length === 1, `精准筛选出 1 个项目，实际: ${matched.length}`);
     assert(matched[0].preview.includes('English Note'), '匹配 English Note 条目');
 
-    // 2. 验证 Ctrl+V 剪贴板粘贴文本触发搜索检索（支持中文等任意文本检索）
-    ext._exitSearchMode();
-    assert(ext._inSearchMode === false, '退出搜索模式');
-
-    // 模拟系统剪贴板中含有“中华”
-    ext._clipboard = {
-        get_text(_type, callback) {
-            callback(this, '中华');
-        },
-    };
+    // 2. 验证 Ctrl+V 被彻底弃用，不再拉取系统剪贴板或触发搜索词注入
     const pasteEvent = {
         get_key_symbol: () => Clutter.KEY_v,
         get_state: () => Clutter.ModifierType.CONTROL_MASK,
     };
     ext._onKeyPress(pasteEvent);
-    assert(ext._inSearchMode === true, 'Ctrl+V 自动进入搜索状态并粘贴');
-    assert(ext.searchQuery === '中华', '搜索词成功获取剪贴板中文字符');
+    assert(ext.searchQuery === 'En', 'Ctrl+V 已彻底弃用，不改变当前搜索词');
+
+    // 3. 退出搜索模式，验证条目左侧图标悬停变搜索图标，移开恢复原图标
+    ext._exitSearchMode();
+    assert(ext._inSearchMode === false, '退出搜索模式');
+    assert(ext._itemSlots[0].currentEntry.preview === 'English Note', '第0槽位为最新加入的 English Note');
+    const slot0Icon = ext._itemSlots[0].iconActor;
+    assert(slot0Icon.icon_name === 'edit-copy-symbolic', '未悬停时显示默认类型图标');
+
+    // 悬停在图标上：图标变为 system-search-symbolic
+    slot0Icon.hover = true;
+    slot0Icon.emit('notify::hover');
+    assert(slot0Icon.icon_name === 'system-search-symbolic', '鼠标悬停在左侧图标上变为搜索放大镜图标');
+
+    // 鼠标移开：图标恢复为原条目图标
+    slot0Icon.hover = false;
+    slot0Icon.emit('notify::hover');
+    assert(slot0Icon.icon_name === 'edit-copy-symbolic', '鼠标移开后图标恢复为原始类型图标');
+
+    // 4. 点击第 1 个槽位 (条目为“中华美食”) 的左侧图标：带入其 preview 并覆盖搜索框
+    const slot1Icon = ext._itemSlots[1].iconActor;
+    assert(ext._itemSlots[1].currentEntry.preview === '中华美食', '第1槽位为中华美食');
+    slot1Icon.emit('button-press-event', { get_button: () => 1 });
+    assert(ext._inSearchMode === true, '点击左侧图标进入搜索状态');
+    assert(ext.searchQuery === '中华美食', '成功将该条目的 preview 完整带入搜索框');
+    const matchedFood = ext._getSortedEntries();
+    assert(matchedFood.length === 1, `精准筛选出 1 个匹配“中华美食”的项目`);
+    assert(matchedFood[0].preview === '中华美食', '匹配到中华美食');
+
+    // 5. 在搜索状态下，已搜索出来的记录再次点击左侧图标带入新 preview 并覆盖搜索框
+    ext._searchQuery = '中华'; // 搜索出 2 项：“中华美食”和“中华人民共和国”
+    ext._renderPage();
     const matchedZh = ext._getSortedEntries();
-    assert(matchedZh.length === 2, `精准匹配 2 个包含“中华”的项目，实际: ${matchedZh.length}`);
+    assert(matchedZh.length === 2, `当前搜索“中华”包含 2 项`);
+    assert(ext._itemSlots[0].currentEntry.preview === '中华美食', '搜索结果项0为中华美食');
+    assert(ext._itemSlots[1].currentEntry.preview === '中华人民共和国', '搜索结果项1为中华人民共和国');
 
-    // 3. 结果列表中通过 Up/Down 选择条目，Enter 确认恢复并关闭弹窗
-    const downEvent = { get_key_symbol: () => Clutter.KEY_Down, get_state: () => 0 };
-    ext._onKeyPress(downEvent);
-    assert(ext._selectedIndex === 1, '选中第 2 个匹配项');
+    // 在搜索状态下点击第 1 项（中华人民共和国）的左侧图标，覆盖当前搜索框中的“中华”
+    const searchResSlot1Icon = ext._itemSlots[1].iconActor;
+    searchResSlot1Icon.emit('button-press-event', { get_button: () => 1 });
+    assert(ext._inSearchMode === true, '依然处于搜索状态');
+    assert(ext.searchQuery === '中华人民共和国', '搜索状态下点击条目图标成功覆盖搜索框已有内容');
+    const matchedPRC = ext._getSortedEntries();
+    assert(matchedPRC.length === 1, `精准筛选出 1 个“中华人民共和国”条目`);
+    assert(matchedPRC[0].preview === '中华人民共和国', '匹配到中华人民共和国');
 
+    // 6. Enter 确认恢复并关闭弹窗
     const enterEvent = { get_key_symbol: () => Clutter.KEY_Return, get_state: () => 0 };
     ext._onKeyPress(enterEvent);
     assert(ext._container === null, '按 Enter 恢复条目并关闭弹窗');

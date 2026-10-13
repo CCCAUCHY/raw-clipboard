@@ -2388,12 +2388,14 @@ export default class RawClipboardExtension extends Extension {
         itemBox.min_height = 48;
         itemBox.max_height = 48;
 
-        // 图标 / 缩略图
+        // 图标 / 缩略图 (支持悬停变搜索放大镜、点击将条目预览内容带入搜索框并覆盖)
         const iconActor = new St.Icon({
             icon_name: 'edit-copy-symbolic',
             style_class: 'raw-clipboard-item-icon',
             icon_size: 20,
             y_align: Clutter.ActorAlign.CENTER,
+            reactive: true,
+            track_hover: true,
         });
         itemBox.add_child(iconActor);
 
@@ -2468,7 +2470,22 @@ export default class RawClipboardExtension extends Extension {
             currentEntry: null,
             currentGIcon: null,
             currentIconName: null,
+            _isHoverSearch: false,
         };
+
+        // 图标悬停显示搜索放大镜，点击将预览内容带入搜索框并覆盖
+        iconActor.connect('notify::hover', () => {
+            this._applySlotIcon(slot);
+        });
+        iconActor.connect('button-press-event', (_actor, event) => {
+            if (event.get_button() === 1 && slot.currentEntry) {
+                const preview = slot.currentEntry.preview || '';
+                this._enterSearchMode(preview);
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_STOP;
+        });
+        iconActor.connect('button-release-event', () => Clutter.EVENT_STOP);
 
         deleteBtn.connect('button-press-event', (_actor, event) => {
             if (event.get_button() === 1 && slot.currentEntry) {
@@ -2508,6 +2525,44 @@ export default class RawClipboardExtension extends Extension {
         return slot;
     }
 
+    _applySlotIcon(slot) {
+        const entry = slot.currentEntry;
+        if (!entry) return;
+
+        if (slot.iconActor.hover) {
+            slot._isHoverSearch = true;
+            slot.iconActor.gicon = null;
+            slot.iconActor.icon_name = 'system-search-symbolic';
+            slot.iconActor.style_class = 'raw-clipboard-item-icon';
+            slot.iconActor.icon_size = 20;
+            return;
+        }
+
+        const wasHoverSearch = Boolean(slot._isHoverSearch);
+        slot._isHoverSearch = false;
+
+        if (entry.thumbIcon) {
+            if (slot.currentGIcon !== entry.thumbIcon || wasHoverSearch) {
+                slot.iconActor.icon_name = null;
+                slot.iconActor.gicon = entry.thumbIcon;
+                slot.iconActor.style_class = 'raw-clipboard-item-thumb';
+                slot.iconActor.icon_size = 34;
+                slot.currentGIcon = entry.thumbIcon;
+                slot.currentIconName = null;
+            }
+        } else {
+            const iconName = entry.icon || 'edit-copy-symbolic';
+            if (slot.currentIconName !== iconName || slot.currentGIcon !== null || wasHoverSearch) {
+                slot.iconActor.gicon = null;
+                slot.iconActor.icon_name = iconName;
+                slot.iconActor.style_class = 'raw-clipboard-item-icon';
+                slot.iconActor.icon_size = 20;
+                slot.currentIconName = iconName;
+                slot.currentGIcon = null;
+            }
+        }
+    }
+
     _renderPage() {
         if (this._renderIdleId) {
             GLib.source_remove(this._renderIdleId);
@@ -2530,6 +2585,7 @@ export default class RawClipboardExtension extends Extension {
             // 隐藏所有槽位
             for (const slot of this._itemSlots) {
                 slot.currentEntry = null;
+                slot._isHoverSearch = false;
                 slot.itemBox.hide();
             }
 
@@ -2584,27 +2640,8 @@ export default class RawClipboardExtension extends Extension {
 
             slot.currentEntry = entry;
 
-            // 1. 图标/缩略图：仅在真实变更时更新，彻底杜绝材质销毁导致的闪烁
-            if (entry.thumbIcon) {
-                if (slot.currentGIcon !== entry.thumbIcon) {
-                    slot.iconActor.icon_name = null;
-                    slot.iconActor.gicon = entry.thumbIcon;
-                    slot.iconActor.style_class = 'raw-clipboard-item-thumb';
-                    slot.iconActor.icon_size = 34;
-                    slot.currentGIcon = entry.thumbIcon;
-                    slot.currentIconName = null;
-                }
-            } else {
-                const iconName = entry.icon || 'edit-copy-symbolic';
-                if (slot.currentIconName !== iconName || slot.currentGIcon !== null) {
-                    slot.iconActor.gicon = null;
-                    slot.iconActor.icon_name = iconName;
-                    slot.iconActor.style_class = 'raw-clipboard-item-icon';
-                    slot.iconActor.icon_size = 20;
-                    slot.currentIconName = iconName;
-                    slot.currentGIcon = null;
-                }
-            }
+            // 1. 图标/缩略图：仅在真实变更时更新，悬停时自动显示搜索图标
+            this._applySlotIcon(slot);
 
             // 2. 文字与时间在位更新
             if (slot.previewLabel.text !== entry.preview) {
@@ -2631,6 +2668,7 @@ export default class RawClipboardExtension extends Extension {
         // 隐藏多余的槽位 (若当前页不满 8 条)
         for (let i = pageItems.length; i < this._itemSlots.length; i++) {
             this._itemSlots[i].currentEntry = null;
+            this._itemSlots[i]._isHoverSearch = false;
             this._itemSlots[i].itemBox.hide();
         }
 
@@ -2713,28 +2751,6 @@ export default class RawClipboardExtension extends Extension {
                     return Clutter.EVENT_STOP;
                 }
             }
-        }
-
-        // Ctrl+V: 粘贴剪贴板文本到搜索框 (支持任何中英文、符号等文本检索)
-        if (isCtrl && (symbol === Clutter.KEY_v || symbol === Clutter.KEY_V)) {
-            if (this._clipboard) {
-                this._clipboard.get_text(St.ClipboardType.CLIPBOARD, (_clip, text) => {
-                    if (!text) return;
-                    const cleanText = text.replace(/[\x00-\x1f\x7f]/g, '').trim();
-                    if (!cleanText) return;
-                    if (!this._inSearchMode) {
-                        this._enterSearchMode(cleanText);
-                    } else {
-                        this._searchQuery += cleanText;
-                        this._updateSearchDisplay();
-                        this._currentPage = 0;
-                        this._selectedIndex = 0;
-                        this._renderPage();
-                        this._updatePageBadge();
-                    }
-                });
-            }
-            return Clutter.EVENT_STOP;
         }
 
         // BackSpace 处理：
