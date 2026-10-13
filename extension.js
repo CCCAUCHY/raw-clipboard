@@ -1865,7 +1865,7 @@ export default class RawClipboardExtension extends Extension {
     }
 
     _calculateDesiredDimensions(monitor) {
-        // 窗口尺寸直接常驻固定为 8 个条目的尺寸 + 顶部排序栏 + 底部区域 (28px + 398px + 14px + 28px = 468px)
+        // 窗口尺寸直接常驻固定为 8 个条目的尺寸 + 顶部排序栏 + 底部区域 (34px + 398px + 14px + 28px = 474px)
         // 彻底消除条目变动或弹窗期间新增复制导致的尺寸跳动与条目溢出
         const popupWidth = 420;
         const maxDisplayCount = 8;
@@ -1873,11 +1873,11 @@ export default class RawClipboardExtension extends Extension {
         const itemSpacing = 2;
         const popupPaddingY = 12; // 容器上下内边距 6px + 6px
         const popupBorderY = 2;   // 边框 1px + 1px
-        const sortBarHeight = 28; // 顶部排序栏高度
+        const sortBarHeight = 34; // 顶部排序栏高度 (调大至 34px 匹配 1em 字体)
         const pageBarHeight = 28; // 底部区域高度 (撤销按钮与页码共享)
 
         let contentHeight = maxDisplayCount * itemHeight + (maxDisplayCount - 1) * itemSpacing; // 398px
-        let popupHeight = sortBarHeight + contentHeight + popupPaddingY + popupBorderY + pageBarHeight; // 468px
+        let popupHeight = sortBarHeight + contentHeight + popupPaddingY + popupBorderY + pageBarHeight; // 474px
         const effectivePageBarHeight = pageBarHeight;
 
         // 严密屏幕边界安全防御

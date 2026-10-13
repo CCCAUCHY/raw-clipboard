@@ -9,22 +9,22 @@
     width: 420px;
 }
 
-/* 顶部排序栏 (高度28px，4个排序切换按钮：记录顺序、大小、类型、首字母) */
+/* 顶部排序栏 (高度34px，4个排序切换按钮：记录顺序、大小、类型、首字母) */
 .raw-clipboard-sort-bar {
-    height: 28px;
-    min-height: 28px;
-    max-height: 28px;
+    height: 34px;
+    min-height: 34px;
+    max-height: 34px;
     width: 408px;
     spacing: 4px;
     margin-bottom: 2px;
 }
 
 .raw-clipboard-sort-btn {
-    height: 24px;
-    min-height: 24px;
-    max-height: 24px;
-    padding: 0 8px;
-    border-radius: 6px;
+    height: 28px;
+    min-height: 28px;
+    max-height: 28px;
+    padding: 0 10px;
+    border-radius: 8px;
     border: none;
     background-color: transparent;
     color: rgba(255, 255, 255, 0.55);
@@ -43,24 +43,24 @@
 }
 
 .raw-clipboard-sort-label {
-    font-size: 0.82em;
+    font-size: 1em;
 }
 
-/* 顶部搜索栏 (高度28px，平时隐藏，键入文字时自动替代排序栏) */
+/* 顶部搜索栏 (高度34px，平时隐藏，键入文字时自动替代排序栏) */
 .raw-clipboard-search-bar {
-    height: 28px;
-    min-height: 28px;
-    max-height: 28px;
+    height: 34px;
+    min-height: 34px;
+    max-height: 34px;
     width: 408px;
-    spacing: 6px;
+    spacing: 8px;
     margin-bottom: 2px;
-    padding: 0 8px;
-    border-radius: 6px;
+    padding: 0 10px;
+    border-radius: 8px;
     background-color: rgba(255, 255, 255, 0.08);
 }
 
 .raw-clipboard-search-icon {
-    icon-size: 14px;
+    icon-size: 16px;
     color: rgba(255, 255, 255, 0.55);
 }
 
@@ -71,7 +71,7 @@
     box-shadow: none;
     outline: none;
     padding: 0;
-    font-size: 0.88em;
+    font-size: 1em;
 }
 
 .raw-clipboard-search-entry:focus {
@@ -194,13 +194,16 @@
 .raw-clipboard-undo-label {
     font-size: 0.82em;
     font-weight: normal;
+    color: rgba(255, 255, 255, 0.45);
 }
 
-/* 底部裸露页码指示器 (靠右排列，分母位置恒定，彻底杜绝翻页文字抖动) */
+/* 底部裸露页码指示器 (等宽字体，靠右排列，与小字样式和字号完全一致，彻底杜绝翻页文字抖动) */
 .raw-clipboard-page-badge {
-    font-size: 0.95em;
+    font-family: "Adwaita Mono", "DejaVu Sans Mono", monospace;
+    font-feature-settings: "tnum";
+    font-size: 0.82em;
     font-weight: normal;
-    color: rgba(255, 255, 255, 0.55);
+    color: rgba(255, 255, 255, 0.45);
     background-color: transparent;
     border: none;
     border-radius: 0;

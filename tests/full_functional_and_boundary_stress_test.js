@@ -386,23 +386,23 @@ const reporter = new TestReporter();
 // ============================================================================
 reporter.suite('1. 弹窗尺寸与底部页码规则验证');
 
-await reporter.run('1.1 条目数 T = 0 时：弹窗常驻固定为 8 条目尺寸 + 排序栏 (468px)，正确展示居中空提示标签，底部区域常驻展示', async () => {
+await reporter.run('1.1 条目数 T = 0 时：弹窗常驻固定为 8 条目尺寸 + 排序栏 (474px)，正确展示居中空提示标签，底部区域常驻展示', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
-    // 验证 _calculateDesiredDimensions 理论计算值 (常驻 8 项尺寸 + 顶部排序栏 + 底部区域: 28 + 398 + 14 + 28 = 468)
+    // 验证 _calculateDesiredDimensions 理论计算值 (常驻 8 项尺寸 + 顶部排序栏 + 底部区域: 34 + 398 + 14 + 28 = 474)
     const dims = ext._calculateDesiredDimensions(null);
     assert(dims.popupWidth === 420, `弹窗宽度应为 420px，实际: ${dims.popupWidth}`);
-    assert(dims.popupHeight === 468, `空列表弹窗高度常驻固定为 468px (28 + 398 + 14 + 28)，实际: ${dims.popupHeight}`);
-    assert(dims.sortBarHeight === 28, `顶部排序栏高度必须为 28px，实际: ${dims.sortBarHeight}`);
+    assert(dims.popupHeight === 474, `空列表弹窗高度常驻固定为 474px (34 + 398 + 14 + 28)，实际: ${dims.popupHeight}`);
+    assert(dims.sortBarHeight === 34, `顶部排序栏高度必须为 34px，实际: ${dims.sortBarHeight}`);
     assert(dims.contentHeight === 398, `空列表内容高度必须为 398px，实际: ${dims.contentHeight}`);
     assert(dims.pageBarHeight === 28, `底部区域高度必须常驻为 28px，实际: ${dims.pageBarHeight}`);
 
     // 打开真实弹窗验证实际 UI Actor
     ext._openPopup();
     assert(ext._popup.width === 420, `_popup.width 实际: ${ext._popup.width}`);
-    assert(ext._popup.height === 468, `_popup.height 实际: ${ext._popup.height}`);
-    assert(ext._sortBar.height === 28, `_sortBar.height 实际: ${ext._sortBar.height}`);
+    assert(ext._popup.height === 474, `_popup.height 实际: ${ext._popup.height}`);
+    assert(ext._sortBar.height === 34, `_sortBar.height 实际: ${ext._sortBar.height}`);
     assert(ext._listContainer.height === 398, `_listContainer.height 实际: ${ext._listContainer.height}`);
     assert(ext._pageBar.visible === true, `_pageBar 必须常驻处于可见状态 (visible === true)`);
     assert(ext._undoBtn.reactive === false, `初始无待撤销项时撤销按钮禁用`);
@@ -415,22 +415,22 @@ await reporter.run('1.1 条目数 T = 0 时：弹窗常驻固定为 8 条目尺�
     ext.disable();
 });
 
-await reporter.run('1.2 条目数 1 <= T <= 8 时：弹窗高度恒定为 8 条目尺寸 + 顶部栏 + 底部区域 (468px)，完全常驻不发生任何伸缩', async () => {
+await reporter.run('1.2 条目数 1 <= T <= 8 时：弹窗高度恒定为 8 条目尺寸 + 顶部栏 + 底部区域 (474px)，完全常驻不发生任何伸缩', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
-    // 逐级压入条目并验证 T = 1 到 8 时弹窗高度均恒定为 468px
+    // 逐级压入条目并验证 T = 1 到 8 时弹窗高度均恒定为 474px
     for (let t = 1; t <= 8; t++) {
         const src = new MockSelectionSource(['text/plain'], new TextEncoder().encode(`Item-Step-${t}`));
         await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src);
 
         const dims = ext._calculateDesiredDimensions(null);
         assert(dims.contentHeight === 398, `T=${t} 内容高度恒定为 398px，实际: ${dims.contentHeight}`);
-        assert(dims.popupHeight === 468, `T=${t} 弹窗高度恒定为 468px，实际: ${dims.popupHeight}`);
+        assert(dims.popupHeight === 474, `T=${t} 弹窗高度恒定为 474px，实际: ${dims.popupHeight}`);
         assert(dims.pageBarHeight === 28, `T=${t} 底部区域高度恒定为 28px，实际: ${dims.pageBarHeight}`);
 
         ext._openPopup();
-        assert(ext._popup.height === 468, `T=${t} 打开弹窗高度必须严格为 468px，实际: ${ext._popup.height}`);
+        assert(ext._popup.height === 474, `T=${t} 打开弹窗高度必须严格为 474px，实际: ${ext._popup.height}`);
         assert(ext._listContainer.height === 398, `T=${t} 列表容器高度必须严格为 398px，实际: ${ext._listContainer.height}`);
         assert(ext._pageBar.visible === true, `T=${t} 底部共享区域必须可见`);
         assert(ext._undoBtn !== null, `T=${t} 左下角撤销按钮必须存在`);
@@ -442,7 +442,7 @@ await reporter.run('1.2 条目数 1 <= T <= 8 时：弹窗高度恒定为 8 条�
     ext.disable();
 });
 
-await reporter.run('1.3 条目数 T > 8 时：弹窗高度严格锁定为 8 条目尺寸 + 顶部栏 + 底部区域 = 468px，底部页码条居中显示', async () => {
+await reporter.run('1.3 条目数 T > 8 时：弹窗高度严格锁定为 8 条目尺寸 + 顶部栏 + 底部区域 = 474px，底部页码条居中显示', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -460,10 +460,10 @@ await reporter.run('1.3 条目数 T > 8 时：弹窗高度严格锁定为 8 条�
         const dims = ext._calculateDesiredDimensions(null);
         assert(dims.contentHeight === 398, `T=${targetCount} 内容区必须严格锁定为 8 项高度 398px (8*48+7*2)，实际: ${dims.contentHeight}`);
         assert(dims.pageBarHeight === 28, `T=${targetCount} 页码高度必须为 28px，实际: ${dims.pageBarHeight}`);
-        assert(dims.popupHeight === 468, `T=${targetCount} 弹窗高度必须严格锁定为 468px，实际: ${dims.popupHeight}`);
+        assert(dims.popupHeight === 474, `T=${targetCount} 弹窗高度必须严格锁定为 474px，实际: ${dims.popupHeight}`);
 
         ext._openPopup();
-        assert(ext._popup.height === 468, `T=${targetCount} 实际弹窗高度必须为 468px，实际: ${ext._popup.height}`);
+        assert(ext._popup.height === 474, `T=${targetCount} 实际弹窗高度必须为 474px，实际: ${ext._popup.height}`);
         assert(ext._listContainer.height === 398, `T=${targetCount} 实际列表容器高必须为 398px，实际: ${ext._listContainer.height}`);
         assert(ext._pageBar.visible === true, `T=${targetCount} 底部页码条必须可见`);
         assert(ext._pageBar.height === 28, `T=${targetCount} 底部页码条高度必须为 28px`);
@@ -480,7 +480,7 @@ await reporter.run('1.3 条目数 T > 8 时：弹窗高度严格锁定为 8 条�
     ext.disable();
 });
 
-await reporter.run('1.4 最后一页不满 8 条时窗口尺寸保持稳定：末页有 1~7 项时，弹窗高度保持为 468px，页码固定在底部', async () => {
+await reporter.run('1.4 最后一页不满 8 条时窗口尺寸保持稳定：末页有 1~7 项时，弹窗高度保持为 474px，页码固定在底部', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -506,8 +506,8 @@ await reporter.run('1.4 最后一页不满 8 条时窗口尺寸保持稳定：�
         }
 
         ext._openPopup();
-        // 初始在第 0 页: 高度 468px
-        assert(ext._popup.height === 468, `初始第 0 页高度应为 468px`);
+        // 初始在第 0 页: 高度 474px
+        assert(ext._popup.height === 474, `初始第 0 页高度应为 474px`);
 
         // 切换至最后一页
         ext._setPage(sc.lastPageIndex);
@@ -515,7 +515,7 @@ await reporter.run('1.4 最后一页不满 8 条时窗口尺寸保持稳定：�
         assert(ext._itemActors.length === sc.lastPageItems, `末页实际渲染项数应为 ${sc.lastPageItems}，实际: ${ext._itemActors.length}`);
 
         // 验证：弹窗高度保持稳定
-        assert(ext._popup.height === 468, `末页仅 ${sc.lastPageItems} 项时，弹窗高度维持 468px，实际: ${ext._popup.height}`);
+        assert(ext._popup.height === 474, `末页仅 ${sc.lastPageItems} 项时，弹窗高度维持 474px，实际: ${ext._popup.height}`);
         assert(ext._listContainer.height === 398, `列表容器高度必须维持 398px，实际: ${ext._listContainer.height}`);
         assert(ext._pageBar.height === 28, `页码条高度必须维持 28px，实际: ${ext._pageBar.height}`);
         assert(ext._pageBar.visible === true, `页码条必须可见`);
@@ -537,13 +537,13 @@ await reporter.run('1.5 屏幕高度受限时的边界自适应测试 (monitor.h
         await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src);
     }
 
-    // 模拟极小屏幕 (高度仅 400px，最大允许高度 400 - 64 = 336px < 468px)
+    // 模拟极小屏幕 (高度仅 400px，最大允许高度 400 - 64 = 336px < 474px)
     const smallMonitor = { x: 0, y: 0, width: 800, height: 400 };
     const dims = ext._calculateDesiredDimensions(smallMonitor);
 
     assert(dims.popupHeight === 336, `受限屏幕下弹窗高应安全限制在 336px，实际: ${dims.popupHeight}`);
     assert(dims.popupHeight <= smallMonitor.height - 64, `弹窗绝不超出屏幕可用高度`);
-    assert(dims.contentHeight === 336 - 14 - 28 - 28, `内容区高度自适应收缩至 ${336 - 14 - 28 - 28}px，实际: ${dims.contentHeight}`);
+    assert(dims.contentHeight === 336 - 14 - 34 - 28, `内容区高度自适应收缩至 ${336 - 14 - 34 - 28}px，实际: ${dims.contentHeight}`);
 
     ext.disable();
 });
@@ -1666,7 +1666,7 @@ await reporter.run('8.5 跨页删除末页唯一条目时页码收敛测试', as
     }
 
     ext._openPopup();
-    assert(ext._popup.height === 468, '初始 9 条高 468px');
+    assert(ext._popup.height === 474, '初始 9 条高 474px');
 
     // 跳转到第 1 页 (仅 1 条，即全局第 8 项)
     ext._setPage(1);
@@ -1675,10 +1675,10 @@ await reporter.run('8.5 跨页删除末页唯一条目时页码收敛测试', as
     // 删除该项 (全局索引 8)
     ext._deleteEntry(8);
 
-    // 验证：总项数变 8，当前页自动向前收敛至第 0 页，选中项处于安全边界内 [0, 7]，高度保持 468px (含底部区域)
+    // 验证：总项数变 8，当前页自动向前收敛至第 0 页，选中项处于安全边界内 [0, 7]，高度保持 474px (含底部区域)
     assert(ext._currentPage === 0, `末页唯一项删除后，当前页应自动收敛至第 0 页，实际: ${ext._currentPage}`);
     assert(ext._selectedIndex >= 0 && ext._selectedIndex < 8, `选中索引必须在当前页安全范围内 [0, 7]，实际: ${ext._selectedIndex}`);
-    assert(ext._popup.height === 468, `条目数回落至 8 时，弹窗高度保持为 468px (含底部共享区域)，实际: ${ext._popup.height}`);
+    assert(ext._popup.height === 474, `条目数回落至 8 时，弹窗高度保持为 474px (含底部共享区域)，实际: ${ext._popup.height}`);
     assert(ext._pageBar.visible === true, `回落至 8 项时底部区域保持可见`);
     assert(ext._pageBadge.visible === false, `回落至 8 项时单页页码应隐藏`);
     assert(ext._undoBtn.reactive === true, `存在待撤销删除项时撤销按钮应处于激活状态`);
@@ -1882,7 +1882,7 @@ await reporter.run('8.12 弹窗尺寸恒定测试 (小于8条时无论删除、�
     const initialPopupHeight = ext._popup.height;
     const initialContentHeight = ext._listContainer.height;
     const initialPageBarHeight = ext._pageBar.height;
-    assert(initialPopupHeight === 468, `常驻弹窗高度必须严格等于 468px，实际: ${initialPopupHeight}`);
+    assert(initialPopupHeight === 474, `常驻弹窗高度必须严格等于 474px，实际: ${initialPopupHeight}`);
     assert(initialContentHeight === 398, `常驻内容容器高度必须为 398px，实际: ${initialContentHeight}`);
     assert(initialPageBarHeight === 28, `底部区域高度必须为 28px`);
 
@@ -1926,7 +1926,7 @@ await reporter.run('8.13 弹窗开启期间外部剪贴板新增条目测试 (�
     }
 
     ext._openPopup();
-    assert(ext._popup.height === 468, '初始打开为常驻 468px');
+    assert(ext._popup.height === 474, '初始打开为常驻 474px');
     assert(ext._itemActors.length === 3, '初始渲染 3 项');
 
     // 在弹窗保持开启状态下，系统发生新的复制行为
@@ -1936,7 +1936,7 @@ await reporter.run('8.13 弹窗开启期间外部剪贴板新增条目测试 (�
     // 触发渲染队列
     ext._renderPage();
 
-    assert(ext._popup.height === 468, '新增条目后弹窗高度完全恒定为 468px，无尺寸跳动');
+    assert(ext._popup.height === 474, '新增条目后弹窗高度完全恒定为 474px，无尺寸跳动');
     assert(ext._listContainer.height === 398, '列表容器高度恒定为 398px');
     assert(ext._itemActors.length === 4, '当前页成功平滑展示 4 项，队首为最新条目');
     assert(ext._itemActors[0].get_children().some(c => c.text === 'LiveItem-New-4' || c.get_children && c.get_children().some(cc => cc.text === 'LiveItem-New-4')), '最新条目成功排入队首');
