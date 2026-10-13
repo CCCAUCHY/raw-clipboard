@@ -164,19 +164,17 @@ function generatePreview(type, mime, gBytes, unknownTypeName = null) {
     if (type === 'text' || type === 'html') {
         try {
             const stream = Gio.MemoryInputStream.new_from_bytes(gBytes);
-            let chunk = stream.read_bytes(1000, null);
-            let text = Utf8Decoder.decode(chunk);
-            // 过滤不可打印控制字符（保留换行 \n, \r 与制表符 \t），再压缩空白
-            let clean = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').replace(/\s+/g, ' ').trim();
+            const CHUNK_SIZE = 4096; // 4KB 甜点大小：既能充分覆盖中英文1000字符预览，又具备微秒级极速处理能力
+            let text = '';
+            let clean = '';
 
-            // 如果文本的前1000字节是空字符，就最多再取10次1000字节，当取到不为空字符或次数用尽时停止，停止时是什么就是什么
-            let attempts = 0;
-            while (!clean && attempts < 10) {
-                const nextChunk = stream.read_bytes(1000, null);
-                if (!nextChunk || nextChunk.get_size() === 0) break;
-                attempts++;
-                text += Utf8Decoder.decode(nextChunk);
+            // 初次预览逻辑与递进式预览统一成一个最多执行 10 次的循环，遇到非空文本则跳出循环
+            for (let attempt = 0; attempt < 10; attempt++) {
+                const chunk = stream.read_bytes(CHUNK_SIZE, null);
+                if (!chunk || chunk.get_size() === 0) break;
+                text += Utf8Decoder.decode(chunk);
                 clean = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').replace(/\s+/g, ' ').trim();
+                if (clean) break;
             }
 
             // 能以文本形式显示：展示前 1000 字符预览（全空白文本安全显示为 (空文本)）
