@@ -30,7 +30,7 @@ class MockActor {
         this.scale_x = 1.0;
         this.scale_y = 1.0;
         this.opacity = 255;
-        this.style_classes = [];
+        this.style_classes = props.style_class ? props.style_class.split(' ') : [];
         this.signals = new Map();
         this.visible = true;
         this.reactive = props.reactive !== undefined ? props.reactive : true;
@@ -125,6 +125,9 @@ class MockActor {
     }
     remove_style_class_name(c) {
         this.style_classes = this.style_classes.filter(x => x !== c);
+    }
+    has_style_class_name(c) {
+        return this.style_classes.includes(c);
     }
 }
 
@@ -3733,10 +3736,12 @@ await reporter.run('13.6 搜索状态支持循环翻页，结果以记录顺序�
     ext.disable();
 });
 
-await reporter.run('13.7 纯键盘直接响应与条目左侧图标悬停搜索/点击带入预览覆盖检索，彻底根除输入法遮挡与粘贴缺陷', async () => {
+await reporter.run('13.7 纯键盘直接响应与条目左侧图标悬停搜索/前64字符点击带入覆盖检索，128字符上限与占位文字样式测试', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
+    const longText = 'A'.repeat(150); // 150 字符的长条目
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['text/plain'], new TextEncoder().encode(longText)));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['text/plain'], new TextEncoder().encode('中华人民共和国')));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['text/plain'], new TextEncoder().encode('中华美食')));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['text/plain'], new TextEncoder().encode('English Note')));
@@ -3749,6 +3754,7 @@ await reporter.run('13.7 纯键盘直接响应与条目左侧图标悬停搜索/
     assert(ext._inSearchMode === true, '进入搜索状态');
     assert(ext.searchQuery === 'E', '首字母 E 立即生效');
     assert(ext._searchEntry.can_focus === false, '输入法完全禁用，无光标无外部焦点争抢');
+    assert(!ext._searchEntry.has_style_class_name('hint'), '有搜索词时移除 hint 样式，恢复高亮正文色');
 
     // 继续键入 'n'
     const nEvent = { get_key_symbol: () => 110, get_state: () => 0, get_key_unicode: () => 110 };
@@ -3766,7 +3772,15 @@ await reporter.run('13.7 纯键盘直接响应与条目左侧图标悬停搜索/
     ext._onKeyPress(pasteEvent);
     assert(ext.searchQuery === 'En', 'Ctrl+V 已彻底弃用，不改变当前搜索词');
 
-    // 3. 退出搜索模式，验证条目左侧图标悬停变搜索图标，移开恢复原图标
+    // 3. 验证删光字符时显示“搜索预览内容...”并添加 hint 样式类
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_BackSpace, get_state: () => 0 });
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_BackSpace, get_state: () => 0 });
+    assert(ext._inSearchMode === true, '依然处于搜索模式');
+    assert(ext.searchQuery === '', '搜索词已被删空');
+    assert(ext._searchEntry.text === '搜索预览内容...', '搜索词删空时显示占位文字');
+    assert(ext._searchEntry.has_style_class_name('hint'), '占位文字带有 hint 样式类实现颜色弱化区分');
+
+    // 4. 退出搜索模式，验证条目左侧图标悬停变搜索图标，移开恢复原图标
     ext._exitSearchMode();
     assert(ext._inSearchMode === false, '退出搜索模式');
     assert(ext._itemSlots[0].currentEntry.preview === 'English Note', '第0槽位为最新加入的 English Note');
@@ -3783,34 +3797,36 @@ await reporter.run('13.7 纯键盘直接响应与条目左侧图标悬停搜索/
     slot0Icon.emit('notify::hover');
     assert(slot0Icon.icon_name === 'edit-copy-symbolic', '鼠标移开后图标恢复为原始类型图标');
 
-    // 4. 点击第 1 个槽位 (条目为“中华美食”) 的左侧图标：带入其 preview 并覆盖搜索框
-    const slot1Icon = ext._itemSlots[1].iconActor;
-    assert(ext._itemSlots[1].currentEntry.preview === '中华美食', '第1槽位为中华美食');
-    slot1Icon.emit('button-press-event', { get_button: () => 1 });
+    // 5. 点击长条目 (150 字符的 'A'...) 的左侧图标：只带入前 64 字符并覆盖搜索框
+    const longItemSlot = ext._itemSlots[3]; // 第 3 槽位为 150 字符的 A...
+    assert(longItemSlot.currentEntry.preview.length === 150, '该条目预览长度为 150');
+    longItemSlot.iconActor.emit('button-press-event', { get_button: () => 1 });
     assert(ext._inSearchMode === true, '点击左侧图标进入搜索状态');
-    assert(ext.searchQuery === '中华美食', '成功将该条目的 preview 完整带入搜索框');
-    const matchedFood = ext._getSortedEntries();
-    assert(matchedFood.length === 1, `精准筛选出 1 个匹配“中华美食”的项目`);
-    assert(matchedFood[0].preview === '中华美食', '匹配到中华美食');
+    assert(ext.searchQuery.length === 64, `带入文本被精确截断为 64 字符上限，实际: ${ext.searchQuery.length}`);
+    assert(ext.searchQuery === 'A'.repeat(64), '成功带入前 64 字符');
 
-    // 5. 在搜索状态下，已搜索出来的记录再次点击左侧图标带入新 preview 并覆盖搜索框
-    ext._searchQuery = '中华'; // 搜索出 2 项：“中华美食”和“中华人民共和国”
+    // 6. 验证搜索框 128 字符上限：连续键入直到超过 128，搜索词被严格限制在 128 字符
+    for (let i = 0; i < 70; i++) {
+        ext._onKeyPress({ get_key_symbol: () => 65, get_state: () => 0, get_key_unicode: () => 65 });
+    }
+    assert(ext.searchQuery.length === 128, `搜索框严格受控于 128 字符上限，实际: ${ext.searchQuery.length}`);
+
+    // 7. 在搜索状态下，点击搜索结果槽位 0 的图标再次覆盖，验证从 128 字符被覆盖回 64 字符
+    const slot0ResIcon = ext._itemSlots[0].iconActor;
+    assert(ext._itemSlots[0].currentEntry.preview.length === 150, '槽位0为长条目');
+    slot0ResIcon.emit('button-press-event', { get_button: () => 1 });
+    assert(ext.searchQuery.length === 64, '搜索状态下点击图标成功覆盖已有超长128字符内容为64字符');
+    assert(ext.searchQuery === 'A'.repeat(64), '成功覆盖为前64字符');
+
+    // 再次验证多项检索下的跨条目覆盖：
+    ext._searchQuery = '中华';
     ext._renderPage();
-    const matchedZh = ext._getSortedEntries();
-    assert(matchedZh.length === 2, `当前搜索“中华”包含 2 项`);
-    assert(ext._itemSlots[0].currentEntry.preview === '中华美食', '搜索结果项0为中华美食');
-    assert(ext._itemSlots[1].currentEntry.preview === '中华人民共和国', '搜索结果项1为中华人民共和国');
+    assert(ext._itemSlots[0].currentEntry.preview === '中华美食', '槽位0为中华美食');
+    assert(ext._itemSlots[1].currentEntry.preview === '中华人民共和国', '槽位1为中华人民共和国');
+    ext._itemSlots[1].iconActor.emit('button-press-event', { get_button: () => 1 });
+    assert(ext.searchQuery === '中华人民共和国', '搜索结果中点击条目1成功覆盖为该条目preview');
 
-    // 在搜索状态下点击第 1 项（中华人民共和国）的左侧图标，覆盖当前搜索框中的“中华”
-    const searchResSlot1Icon = ext._itemSlots[1].iconActor;
-    searchResSlot1Icon.emit('button-press-event', { get_button: () => 1 });
-    assert(ext._inSearchMode === true, '依然处于搜索状态');
-    assert(ext.searchQuery === '中华人民共和国', '搜索状态下点击条目图标成功覆盖搜索框已有内容');
-    const matchedPRC = ext._getSortedEntries();
-    assert(matchedPRC.length === 1, `精准筛选出 1 个“中华人民共和国”条目`);
-    assert(matchedPRC[0].preview === '中华人民共和国', '匹配到中华人民共和国');
-
-    // 6. Enter 确认恢复并关闭弹窗
+    // 8. Enter 确认恢复并关闭弹窗
     const enterEvent = { get_key_symbol: () => Clutter.KEY_Return, get_state: () => 0 };
     ext._onKeyPress(enterEvent);
     assert(ext._container === null, '按 Enter 恢复条目并关闭弹窗');

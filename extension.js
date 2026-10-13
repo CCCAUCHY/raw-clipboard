@@ -108,6 +108,9 @@ export function getPrintableChar(event) {
 
 const Utf8Decoder = new TextDecoder();
 
+export const MAX_SEARCH_QUERY_LEN = 128;
+export const MAX_SEARCH_IMPORT_LEN = 64;
+
 // 核心 MIME 检测规则
 // 纯内存暂存：不屏蔽密码等类型，保留原始字节流
 function detectCoreMime(mimeTypes) {
@@ -596,7 +599,7 @@ export default class RawClipboardExtension extends Extension {
 
     _enterSearchMode(initialChar = '') {
         this._inSearchMode = true;
-        this._searchQuery = initialChar;
+        this._searchQuery = (initialChar || '').slice(0, MAX_SEARCH_QUERY_LEN);
         if (this._sortBar) this._sortBar.hide();
         if (this._searchBar) this._searchBar.show();
         this._updateSearchDisplay();
@@ -2479,7 +2482,7 @@ export default class RawClipboardExtension extends Extension {
         });
         iconActor.connect('button-press-event', (_actor, event) => {
             if (event.get_button() === 1 && slot.currentEntry) {
-                const preview = slot.currentEntry.preview || '';
+                const preview = (slot.currentEntry.preview || '').slice(0, MAX_SEARCH_IMPORT_LEN);
                 this._enterSearchMode(preview);
                 return Clutter.EVENT_STOP;
             }
@@ -2869,12 +2872,14 @@ export default class RawClipboardExtension extends Extension {
                 this._enterSearchMode(char);
                 return Clutter.EVENT_STOP;
             } else {
-                this._searchQuery += char;
-                this._updateSearchDisplay();
-                this._currentPage = 0;
-                this._selectedIndex = 0;
-                this._renderPage();
-                this._updatePageBadge();
+                if (this._searchQuery.length < MAX_SEARCH_QUERY_LEN) {
+                    this._searchQuery += char;
+                    this._updateSearchDisplay();
+                    this._currentPage = 0;
+                    this._selectedIndex = 0;
+                    this._renderPage();
+                    this._updatePageBadge();
+                }
                 return Clutter.EVENT_STOP;
             }
         }
