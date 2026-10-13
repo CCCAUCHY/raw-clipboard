@@ -558,6 +558,8 @@ export default class RawClipboardExtension extends Extension {
     #activeNonces = new Set();
     // 未知类型按元数据 raw 格式映射表 (mime -> '未知类型N')
     #unknownTypes = new Map();
+    // 缓存条目预览文本的 MD5 摘要 (entry -> 8位 MD5 字符串，不清缓存，WeakMap 随条目生命周期自动释放)
+    #previewMd5ByEntry = new WeakMap();
     // 当前在途异步读取专属 Cancellable（用于抢占中断旧源）
     _currentReadCancellable = null;
     // 撤销栈 (LIFO 记录软删除条目)
@@ -891,15 +893,32 @@ export default class RawClipboardExtension extends Extension {
 
     _formatEntryLog(entry) {
         if (!entry) return '[空条目]';
+        // 日志关闭时直接短路返回，不进行任何 MD5 计算，消除 CPU 开销
+        if (!this._isLoggingEnabled()) return '';
         const id = entry.id || 'unknown';
         const type = entry.type || 'unknown';
         const size = typeof entry.size === 'number' ? entry.size : (entry.bytes?.get_size ? entry.bytes.get_size() : 0);
-        let md5 = 'none';
+
+        // 不预览的记录项目（位图、未知类型等）或无预览内容的不计算且不打印 MD5
+        if (!this._isTextPreviewable(entry) || !entry.preview) {
+            return `[条目#${id} (${type}, ${size}B)]`;
+        }
+
+        // 仅计算预览文本的前 8 位 MD5，并写入 WeakMap 缓存；日志开关切换或日常运行时不清已有缓存
+        let md5 = null;
         try {
-            if (entry.checksum) {
-                md5 = String(entry.checksum).slice(0, 8);
-            }
+            md5 = this.#previewMd5ByEntry.get(entry);
         } catch (_e) {}
+        if (!md5) {
+            try {
+                md5 = GLib.compute_checksum_for_string(GLib.ChecksumType.MD5, entry.preview, -1).slice(0, 8);
+                try {
+                    this.#previewMd5ByEntry.set(entry, md5);
+                } catch (_e) {}
+            } catch (_e) {
+                md5 = 'none';
+            }
+        }
         return `[条目#${id} (MD5:${md5}, ${type}, ${size}B)]`;
     }
 

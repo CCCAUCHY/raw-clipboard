@@ -2529,23 +2529,13 @@ await reporter.run('10.6 条目对象冻结属性只读验证 (Object.freeze 保
     }, TypeError, '条目对象属性不可修改');
 });
 
-await reporter.run('10.7 日志开关功能验证 (enable-logging 关闭时静默，开启时按需输出与严禁泄露 preview 手令)', async () => {
+await reporter.run('10.7 日志开关功能验证 (enable-logging 关闭时静默与不计算MD5，开启时按需输出预览MD5指纹，不可预览项目不打印MD5，不清已有缓存)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
     ext._settings.set_boolean('enable-logging', false);
     assert(ext._isLoggingEnabled() === false, '默认状态下日志应处于关闭状态');
 
-    ext._log('test log');
-    ext._warn('test warn');
-    ext._error('test error');
-
-    ext._settings.set_boolean('enable-logging', true);
-    assert(ext._isLoggingEnabled() === true, '开启后日志状态为 true');
-    ext._log('test log enabled');
-    ext._warn('test warn enabled');
-
-    // 验证方案 B 日志格式化脱敏：严禁泄露 preview 文本内容，仅输出 ID、MD5 截断、类型与大小
     const secretEntry = {
         id: '123_456',
         preview: 'MY_SUPER_SECRET_PASSWORD_123456',
@@ -2553,11 +2543,65 @@ await reporter.run('10.7 日志开关功能验证 (enable-logging 关闭时静�
         size: 32,
         checksum: '9e107d9d372bb6826bd81d3542a419d6',
     };
+
+    // 1. 日志关闭时：_formatEntryLog 直接返回空字符串，不执行任何 MD5 计算
+    const offLogStr = ext._formatEntryLog(secretEntry);
+    assert(offLogStr === '', '日志关闭时 _formatEntryLog 应直接返回空字符串，避免计算 MD5');
+
+    ext._log('test log');
+    ext._warn('test warn');
+    ext._error('test error');
+
+    // 2. 开启日志
+    ext._settings.set_boolean('enable-logging', true);
+    assert(ext._isLoggingEnabled() === true, '开启后日志状态为 true');
+    ext._log('test log enabled');
+    ext._warn('test warn enabled');
+
+    // 3. 验证日志格式化脱敏：严禁泄露 preview 文本内容，计算预览文本 MD5 前 8 位指纹
+    const expectedPreviewMd5 = GLib.compute_checksum_for_string(GLib.ChecksumType.MD5, secretEntry.preview, -1).slice(0, 8);
     const logStr = ext._formatEntryLog(secretEntry);
     assert(!logStr.includes('MY_SUPER_SECRET_PASSWORD'), '日志输出必须严禁包含任何 preview 明文手令或密码！');
     assert(logStr.includes('123_456'), '日志输出应包含条目 ID');
-    assert(logStr.includes('9e107d9d'), '日志输出应包含 MD5 前 8 位摘要');
+    assert(logStr.includes(expectedPreviewMd5), `日志输出应包含预览文本 MD5 前 8 位指纹 (${expectedPreviewMd5})，而非全量 checksum`);
+    assert(!logStr.includes('9e107d9d'), '日志输出不应使用全量 checksum');
     assert(logStr.includes('32B'), '日志输出应包含条目大小');
+
+    // 4. 验证不预览的记录项目（image, raw）：不计算且不输出 MD5
+    const imageEntry = {
+        id: 'img_789',
+        type: 'image',
+        size: 1024,
+        preview: '不可见位图预览',
+    };
+    const imageLogStr = ext._formatEntryLog(imageEntry);
+    assert(imageLogStr.includes('img_789'), '图片条目日志应包含条目 ID');
+    assert(imageLogStr.includes('1024B'), '图片条目日志应包含大小');
+    assert(!imageLogStr.includes('MD5'), '不预览的位图条目绝不计算和打印 MD5');
+    assert(imageLogStr === '[条目#img_789 (image, 1024B)]', '不预览条目日志格式应直接省略 MD5 字段');
+
+    const rawEntry = {
+        id: 'raw_999',
+        type: 'raw',
+        size: 256,
+        preview: '未知二进制',
+    };
+    const rawLogStr = ext._formatEntryLog(rawEntry);
+    assert(rawLogStr.includes('raw_999'), 'raw 条目日志应包含条目 ID');
+    assert(!rawLogStr.includes('MD5'), '未知二进制 raw 条目绝不计算和打印 MD5');
+    assert(rawLogStr === '[条目#raw_999 (raw, 256B)]', '未知二进制条目日志格式应直接省略 MD5 字段');
+
+    // 5. 验证缓存重用与日志关闭后不清已有缓存
+    const cachedLogStr = ext._formatEntryLog(secretEntry);
+    assert(cachedLogStr === logStr, '多次格式化同一条目应命中 WeakMap 缓存');
+
+    // 关闭日志时不计算返回空
+    ext._settings.set_boolean('enable-logging', false);
+    assert(ext._formatEntryLog(secretEntry) === '', '日志关闭时短路返回空字符串');
+
+    // 重新开启日志，缓存依然有效（不清已有缓存）
+    ext._settings.set_boolean('enable-logging', true);
+    assert(ext._formatEntryLog(secretEntry) === logStr, '重新开启日志后原条目缓存仍然存在且有效');
 
     ext._settings.set_boolean('enable-logging', false);
     assert(ext._isLoggingEnabled() === false, '恢复后日志处于关闭状态');
