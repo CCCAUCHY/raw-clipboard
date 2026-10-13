@@ -583,125 +583,15 @@ export default class RawClipboardExtension extends Extension {
         return entry.type === 'text' || entry.type === 'html' || entry.type === 'files';
     }
 
-    _onSearchTextChanged() {
-        if (!this._inSearchMode) return;
-        const newText = this._searchEntry ? this._searchEntry.get_text() : '';
-        if (this._searchQuery === newText) return;
-        this._searchQuery = newText;
-        this._currentPage = 0;
-        this._selectedIndex = 0;
-        this._renderPage();
-        this._updatePageBadge();
-    }
-
-    _onSearchEntryKeyPress(event) {
-        if (!this._inSearchMode) return Clutter.EVENT_PROPAGATE;
-
-        const symbol = event.get_key_symbol();
-        const state = typeof event.get_state === 'function' ? event.get_state() : 0;
-
-        // 1. 快捷键关闭 (二次兜底)：若当前按键与设置的 toggle-shortcut 匹配，则关闭弹窗
-        if (this._settings) {
-            const shortcuts = this._settings.get_strv('toggle-shortcut');
-            if (shortcuts && shortcuts.length > 0) {
-                const relevantMods = state & (
-                    Clutter.ModifierType.CONTROL_MASK |
-                    Clutter.ModifierType.MOD1_MASK |
-                    Clutter.ModifierType.SHIFT_MASK |
-                    Clutter.ModifierType.SUPER_MASK
-                );
-                if (typeof Meta.accelerator_name === 'function') {
-                    const accel = Meta.accelerator_name(relevantMods, symbol);
-                    if (accel && shortcuts.some(s => s.toLowerCase() === accel.toLowerCase())) {
-                        this._closePopup();
-                        return Clutter.EVENT_STOP;
-                    }
-                }
-            }
+    _updateSearchDisplay() {
+        if (!this._searchEntry) return;
+        if (this._searchQuery && this._searchQuery.length > 0) {
+            this._searchEntry.set_text(this._searchQuery);
+            this._searchEntry.remove_style_class_name('hint');
+        } else {
+            this._searchEntry.set_text('搜索预览内容...');
+            this._searchEntry.add_style_class_name('hint');
         }
-
-        // 2. Esc: 退出搜索模式回到完整列表 (不关闭弹窗)
-        if (symbol === Clutter.KEY_Escape) {
-            this._exitSearchMode();
-            return Clutter.EVENT_STOP;
-        }
-
-        // 3. Enter / KP_Enter: 确认恢复当前选中的条目并关闭弹窗
-        if (symbol === Clutter.KEY_Return || symbol === Clutter.KEY_KP_Enter) {
-            const currentEntries = this._getSortedEntries();
-            const totalCount = currentEntries.length;
-            const globalIndex = this._currentPage * 8 + this._selectedIndex;
-            if (globalIndex >= 0 && globalIndex < totalCount) {
-                this._restoreEntry(currentEntries[globalIndex]);
-            }
-            this._closePopup();
-            return Clutter.EVENT_STOP;
-        }
-
-        // 4. 方向键 Up: 在搜索结果列表中选择上一项
-        if (symbol === Clutter.KEY_Up) {
-            const currentEntries = this._getSortedEntries();
-            const totalCount = currentEntries.length;
-            const totalPages = Math.max(1, Math.ceil(totalCount / 8));
-            if (totalCount > 0) {
-                if (this._selectedIndex > 0) {
-                    this._setSelectedIndex(this._selectedIndex - 1);
-                } else if (this._currentPage > 0) {
-                    const prevPageCount = 8;
-                    this._setPage(this._currentPage - 1, prevPageCount - 1);
-                } else if (totalPages > 1) {
-                    const lastPage = totalPages - 1;
-                    const lastPageCount = totalCount - lastPage * 8;
-                    this._setPage(lastPage, lastPageCount - 1);
-                }
-            }
-            return Clutter.EVENT_STOP;
-        }
-
-        // 5. 方向键 Down: 在搜索结果列表中选择下一项
-        if (symbol === Clutter.KEY_Down) {
-            const currentEntries = this._getSortedEntries();
-            const totalCount = currentEntries.length;
-            const totalPages = Math.max(1, Math.ceil(totalCount / 8));
-            const startIndex = this._currentPage * 8;
-            const pageCount = Math.max(0, Math.min(8, totalCount - startIndex));
-            if (totalCount > 0) {
-                if (this._selectedIndex < pageCount - 1) {
-                    this._setSelectedIndex(this._selectedIndex + 1);
-                } else if (this._currentPage < totalPages - 1) {
-                    this._setPage(this._currentPage + 1, 0);
-                } else if (totalPages > 1) {
-                    this._setPage(0, 0);
-                }
-            }
-            return Clutter.EVENT_STOP;
-        }
-
-        // 6. PageUp: 翻至上一页 (循环翻页)
-        if (symbol === Clutter.KEY_Page_Up) {
-            const currentEntries = this._getSortedEntries();
-            const totalPages = Math.max(1, Math.ceil(currentEntries.length / 8));
-            if (totalPages > 1) {
-                const targetPage = (this._currentPage - 1 + totalPages) % totalPages;
-                this._setPage(targetPage, this._selectedIndex);
-            }
-            return Clutter.EVENT_STOP;
-        }
-
-        // 7. PageDown: 翻至下一页 (循环翻页)
-        if (symbol === Clutter.KEY_Page_Down) {
-            const currentEntries = this._getSortedEntries();
-            const totalPages = Math.max(1, Math.ceil(currentEntries.length / 8));
-            if (totalPages > 1) {
-                const targetPage = (this._currentPage + 1) % totalPages;
-                this._setPage(targetPage, this._selectedIndex);
-            }
-            return Clutter.EVENT_STOP;
-        }
-
-        // 其余按键（字符输入、输入法选词上屏、左右光标移动、Shift+方向键选中、Home/End、Ctrl+C/V/X/A、Delete/BackSpace 等）
-        // 一律放行给 ClutterText 原生处理！
-        return Clutter.EVENT_PROPAGATE;
     }
 
     _enterSearchMode(initialChar = '') {
@@ -709,13 +599,7 @@ export default class RawClipboardExtension extends Extension {
         this._searchQuery = initialChar;
         if (this._sortBar) this._sortBar.hide();
         if (this._searchBar) this._searchBar.show();
-        if (this._searchEntry) {
-            this._searchEntry.set_text(this._searchQuery);
-            if (this._searchEntry.clutter_text) {
-                this._searchEntry.clutter_text.set_cursor_position(-1);
-            }
-            this._searchEntry.grab_key_focus();
-        }
+        this._updateSearchDisplay();
         this._currentPage = 0;
         this._selectedIndex = 0;
         this._renderPage();
@@ -728,12 +612,10 @@ export default class RawClipboardExtension extends Extension {
         this._searchQuery = '';
         if (this._searchEntry) {
             this._searchEntry.set_text('');
+            this._searchEntry.remove_style_class_name('hint');
         }
         if (this._searchBar) this._searchBar.hide();
         if (this._sortBar) this._sortBar.show();
-        if (this._container) {
-            this._container.grab_key_focus();
-        }
         this._currentPage = 0;
         this._selectedIndex = 0;
         this._renderPage();
@@ -2076,8 +1958,8 @@ export default class RawClipboardExtension extends Extension {
                 visible: false,
             });
             this._searchBar.connect('button-press-event', () => {
-                if (this._searchEntry) {
-                    this._searchEntry.grab_key_focus();
+                if (this._inSearchMode) {
+                    this._exitSearchMode();
                 }
                 return Clutter.EVENT_STOP;
             });
@@ -2090,26 +1972,18 @@ export default class RawClipboardExtension extends Extension {
                 reactive: false,
             });
 
-            // 搜索输入框：原生支持光标、文本选择、剪贴板粘贴与中文输入法 (IME)
-            this._searchEntry = new St.Entry({
-                style_class: 'raw-clipboard-search-entry',
-                hint_text: '搜索预览内容...',
-                can_focus: true,
-                reactive: true,
+            // 搜索显示标签：纯键盘直接响应无光标，彻底禁用输入法，根除输入法弹窗遮挡与首字母遗漏
+            this._searchEntry = new St.Label({
+                style_class: 'raw-clipboard-search-entry hint',
+                text: '搜索预览内容...',
+                reactive: false,
+                can_focus: false,
                 x_expand: true,
                 y_align: Clutter.ActorAlign.CENTER,
             });
-            this._searchEntry.connect('button-press-event', () => Clutter.EVENT_PROPAGATE);
             if (this._searchEntry.clutter_text) {
                 this._searchEntry.clutter_text.use_markup = false;
-                if (typeof this._searchEntry.clutter_text.connect === 'function') {
-                    this._searchEntry.clutter_text.connect('text-changed', () => {
-                        this._onSearchTextChanged();
-                    });
-                    this._searchEntry.clutter_text.connect('key-press-event', (_actor, event) => {
-                        return this._onSearchEntryKeyPress(event);
-                    });
-                }
+                this._searchEntry.clutter_text.ellipsize = Pango.EllipsizeMode.END;
             }
 
             this._searchBar.add_child(searchIcon);
@@ -2782,51 +2656,14 @@ export default class RawClipboardExtension extends Extension {
     }
 
     _onKeyPress(event) {
-        if (this._inSearchMode) {
-            const stop = this._onSearchEntryKeyPress(event);
-            if (stop === Clutter.EVENT_STOP) {
-                return Clutter.EVENT_STOP;
-            }
-            const symbol = event.get_key_symbol();
-            if (symbol === Clutter.KEY_Left || symbol === Clutter.KEY_Page_Up) {
-                const currentEntries = this._getSortedEntries();
-                const totalPages = Math.max(1, Math.ceil(currentEntries.length / 8));
-                if (totalPages > 1) {
-                    const targetPage = (this._currentPage - 1 + totalPages) % totalPages;
-                    this._setPage(targetPage, this._selectedIndex);
-                }
-                return Clutter.EVENT_STOP;
-            }
-            if (symbol === Clutter.KEY_Right || symbol === Clutter.KEY_Page_Down) {
-                const currentEntries = this._getSortedEntries();
-                const totalPages = Math.max(1, Math.ceil(currentEntries.length / 8));
-                if (totalPages > 1) {
-                    const targetPage = (this._currentPage + 1) % totalPages;
-                    this._setPage(targetPage, this._selectedIndex);
-                }
-                return Clutter.EVENT_STOP;
-            }
-            if (symbol === Clutter.KEY_BackSpace) {
-                if (this._searchEntry) {
-                    const cur = this._searchEntry.get_text();
-                    if (cur.length > 0) {
-                        this._searchEntry.set_text(cur.slice(0, -1));
-                    }
-                }
-                return Clutter.EVENT_STOP;
-            }
-            const char = getPrintableChar(event);
-            if (char && this._searchEntry) {
-                this._searchEntry.set_text(this._searchEntry.get_text() + char);
-                return Clutter.EVENT_STOP;
-            }
-            return Clutter.EVENT_PROPAGATE;
-        }
-
         const symbol = event.get_key_symbol();
 
-        // Esc: 关闭弹窗
+        // Esc: 若在搜索模式，先退出搜索状态回到完整列表；否则关闭弹窗
         if (symbol === Clutter.KEY_Escape) {
+            if (this._inSearchMode) {
+                this._exitSearchMode();
+                return Clutter.EVENT_STOP;
+            }
             this._closePopup();
             return Clutter.EVENT_STOP;
         }
@@ -2835,13 +2672,15 @@ export default class RawClipboardExtension extends Extension {
         const SORT_MODES = ['queue', 'size', 'type', 'initial'];
         const isShift = Boolean(state & Clutter.ModifierType.SHIFT_MASK);
 
-        // Tab / Shift+Tab: 循环切换排序方式 (记录顺序 -> 大小 -> 类型 -> 首字母)
+        // Tab / Shift+Tab: 循环切换排序方式 (记录顺序 -> 大小 -> 类型 -> 首字母) - 仅在非搜索模式下生效
         if (symbol === Clutter.KEY_Tab || symbol === Clutter.KEY_ISO_Left_Tab) {
-            const curIdx = SORT_MODES.indexOf(this._sortMode);
-            const nextIdx = (isShift || symbol === Clutter.KEY_ISO_Left_Tab)
-                ? (curIdx - 1 + SORT_MODES.length) % SORT_MODES.length
-                : (curIdx + 1) % SORT_MODES.length;
-            this._setSortMode(SORT_MODES[nextIdx]);
+            if (!this._inSearchMode) {
+                const curIdx = SORT_MODES.indexOf(this._sortMode);
+                const nextIdx = (isShift || symbol === Clutter.KEY_ISO_Left_Tab)
+                    ? (curIdx - 1 + SORT_MODES.length) % SORT_MODES.length
+                    : (curIdx + 1) % SORT_MODES.length;
+                this._setSortMode(SORT_MODES[nextIdx]);
+            }
             return Clutter.EVENT_STOP;
         }
 
@@ -2865,38 +2704,80 @@ export default class RawClipboardExtension extends Extension {
             }
         }
 
-        // Ctrl+Z: 撤销最近一次删除
         const isCtrl = Boolean(state & Clutter.ModifierType.CONTROL_MASK);
+
+        // Ctrl+Z: 撤销最近一次删除 (仅在非搜索模式下生效)
         if (isCtrl && (symbol === Clutter.KEY_z || symbol === Clutter.KEY_Z)) {
-            if (this._undoLastDelete()) {
-                return Clutter.EVENT_STOP;
+            if (!this._inSearchMode) {
+                if (this._undoLastDelete()) {
+                    return Clutter.EVENT_STOP;
+                }
             }
         }
 
-        // BackSpace: 删除当前选中的历史记录条目
-        if (symbol === Clutter.KEY_BackSpace) {
-            const currentEntries = this._getSortedEntries();
-            const globalIndex = this._currentPage * 8 + this._selectedIndex;
-            if (globalIndex >= 0 && globalIndex < currentEntries.length) {
-                this._deleteEntry(currentEntries[globalIndex]);
+        // Ctrl+V: 粘贴剪贴板文本到搜索框 (支持任何中英文、符号等文本检索)
+        if (isCtrl && (symbol === Clutter.KEY_v || symbol === Clutter.KEY_V)) {
+            if (this._clipboard) {
+                this._clipboard.get_text(St.ClipboardType.CLIPBOARD, (_clip, text) => {
+                    if (!text) return;
+                    const cleanText = text.replace(/[\x00-\x1f\x7f]/g, '').trim();
+                    if (!cleanText) return;
+                    if (!this._inSearchMode) {
+                        this._enterSearchMode(cleanText);
+                    } else {
+                        this._searchQuery += cleanText;
+                        this._updateSearchDisplay();
+                        this._currentPage = 0;
+                        this._selectedIndex = 0;
+                        this._renderPage();
+                        this._updatePageBadge();
+                    }
+                });
             }
             return Clutter.EVENT_STOP;
         }
 
-        // Delete 按键: 删除当前选中的历史记录条目
+        // BackSpace 处理：
+        // 搜索状态下：删除搜索词末尾字符；删光时不退出搜索状态，依然保留搜索框但显示无匹配项目
+        // 非搜索状态下：删除当前选中的历史记录条目
+        if (symbol === Clutter.KEY_BackSpace) {
+            if (this._inSearchMode) {
+                if (this._searchQuery.length > 0) {
+                    this._searchQuery = this._searchQuery.slice(0, -1);
+                    this._updateSearchDisplay();
+                    this._currentPage = 0;
+                    this._selectedIndex = 0;
+                    this._renderPage();
+                    this._updatePageBadge();
+                }
+                return Clutter.EVENT_STOP;
+            } else {
+                const currentEntries = this._getSortedEntries();
+                const globalIndex = this._currentPage * 8 + this._selectedIndex;
+                if (globalIndex >= 0 && globalIndex < currentEntries.length) {
+                    this._deleteEntry(currentEntries[globalIndex]);
+                }
+                return Clutter.EVENT_STOP;
+            }
+        }
+
+        // Delete 按键：仅在非搜索模式下执行删除，防止在搜索输入期间误删条目
         if (symbol === Clutter.KEY_Delete) {
-            const currentEntries = this._getSortedEntries();
-            const globalIndex = this._currentPage * 8 + this._selectedIndex;
-            if (globalIndex >= 0 && globalIndex < currentEntries.length) {
-                this._deleteEntry(currentEntries[globalIndex]);
+            if (!this._inSearchMode) {
+                const currentEntries = this._getSortedEntries();
+                const globalIndex = this._currentPage * 8 + this._selectedIndex;
+                if (globalIndex >= 0 && globalIndex < currentEntries.length) {
+                    this._deleteEntry(currentEntries[globalIndex]);
+                }
             }
             return Clutter.EVENT_STOP;
         }
 
         // Enter / KP_Enter / Space: 确认选中并恢复
+        // 注意：搜索状态下 Space 作为输入字符搜索，不可用于确认恢复
         const isConfirmKey = symbol === Clutter.KEY_Return ||
             symbol === Clutter.KEY_KP_Enter ||
-            symbol === Clutter.KEY_space;
+            (!this._inSearchMode && symbol === Clutter.KEY_space);
 
         if (isConfirmKey) {
             const currentEntries = this._getSortedEntries();
@@ -2925,7 +2806,6 @@ export default class RawClipboardExtension extends Extension {
                     const prevPageCount = 8;
                     this._setPage(this._currentPage - 1, prevPageCount - 1);
                 } else if (totalPages > 1) {
-                    // 第一页首项循环至末页尾项
                     const lastPage = totalPages - 1;
                     const lastPageCount = totalCount - lastPage * 8;
                     this._setPage(lastPage, lastPageCount - 1);
@@ -2942,7 +2822,6 @@ export default class RawClipboardExtension extends Extension {
                 } else if (this._currentPage < totalPages - 1) {
                     this._setPage(this._currentPage + 1, 0);
                 } else if (totalPages > 1) {
-                    // 末页尾项循环至第一页首项
                     this._setPage(0, 0);
                 }
             }
@@ -2967,11 +2846,21 @@ export default class RawClipboardExtension extends Extension {
             return Clutter.EVENT_STOP;
         }
 
-        // 字符输入：键入任何文字时自动出现替代排序选项卡
+        // 字符输入：键入任何文字时自动出现替代排序选项卡；已在搜索状态时追加输入
         const char = getPrintableChar(event);
         if (char) {
-            this._enterSearchMode(char);
-            return Clutter.EVENT_STOP;
+            if (!this._inSearchMode) {
+                this._enterSearchMode(char);
+                return Clutter.EVENT_STOP;
+            } else {
+                this._searchQuery += char;
+                this._updateSearchDisplay();
+                this._currentPage = 0;
+                this._selectedIndex = 0;
+                this._renderPage();
+                this._updatePageBadge();
+                return Clutter.EVENT_STOP;
+            }
         }
 
         return Clutter.EVENT_PROPAGATE;
