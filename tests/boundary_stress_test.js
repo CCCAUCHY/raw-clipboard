@@ -127,16 +127,32 @@ class MockEntry extends MockActor {
     constructor(props = {}) {
         super(props);
         this.text = props.text || '';
-        this.clutter_text = {
+        this.hint_text = props.hint_text || '';
+        this.can_focus = props.can_focus !== undefined ? props.can_focus : true;
+        this.clutter_text = new MockActor({
             use_markup: false,
             set_cursor_position: () => {},
+        });
+        this.clutter_text.get_text = () => this.text;
+        this.clutter_text.set_text = (t) => { this.set_text(t); };
+        this.clutter_text.insert_text = (str, _pos) => {
+            this.set_text(this.text + str);
         };
     }
     set_text(t) {
         this.text = t;
+        if (this.clutter_text && typeof this.clutter_text.emit === 'function') {
+            this.clutter_text.emit('text-changed');
+        }
     }
     get_text() {
         return this.text;
+    }
+    grab_key_focus() {
+        this.has_focus = true;
+        if (this.clutter_text && typeof this.clutter_text.grab_key_focus === 'function') {
+            this.clutter_text.grab_key_focus();
+        }
     }
 }
 

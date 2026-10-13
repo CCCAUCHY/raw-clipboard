@@ -79,6 +79,12 @@ class MockActor {
             }
         }
     }
+    grab_key_focus() {
+        this.has_focus = true;
+    }
+    has_key_focus() {
+        return Boolean(this.has_focus);
+    }
     set_position(x, y) { this.x = x; this.y = y; }
     set_size(w, h) { this.width = w; this.height = h; }
     set_pivot_point(px, py) { this.pivot_x = px; this.pivot_y = py; }
@@ -173,16 +179,30 @@ class MockEntry extends MockActor {
     constructor(props = {}) {
         super(props);
         this.text = props.text || '';
-        this.clutter_text = {
+        this.hint_text = props.hint_text || '';
+        this.can_focus = props.can_focus !== undefined ? props.can_focus : true;
+        this.clutter_text = new MockActor({
             use_markup: false,
             set_cursor_position: () => {},
+        });
+        this.clutter_text.get_text = () => this.text;
+        this.clutter_text.set_text = (t) => { this.set_text(t); };
+        this.clutter_text.insert_text = (str, _pos) => {
+            this.set_text(this.text + str);
         };
     }
     set_text(t) {
         this.text = t;
+        if (this.clutter_text) {
+            this.clutter_text.emit('text-changed');
+        }
     }
     get_text() {
         return this.text;
+    }
+    grab_key_focus() {
+        this.has_focus = true;
+        if (this.clutter_text) this.clutter_text.grab_key_focus();
     }
 }
 
@@ -3536,8 +3556,7 @@ await reporter.run('13.3 搜索框字符删光时不退出搜索状态，但显�
 
     assert(ext._inSearchMode === true, '字符删光时依然处于搜索状态，绝不退出搜索');
     assert(ext.searchQuery === '', '搜索词变为空');
-    assert(ext._searchEntry.text === '搜索预览内容...', '搜索输入框显示占位词');
-    assert(ext._searchEntry.style_classes.includes('hint'), '搜索输入框带有 hint 样式类');
+    assert(ext._searchEntry.get_text() === '', '搜索输入框为空');
     assert(ext._getSortedEntries().length === 0, '搜索词为空时返回 0 项 (空列表)');
     assert(ext._emptyLabel && ext._emptyLabel.visible === true, '显示空列表标签');
     assert(ext._emptyLabel.text === '无匹配项目', `空标签文本应为 无匹配项目，实际: ${ext._emptyLabel.text}`);
@@ -3575,7 +3594,7 @@ await reporter.run('13.4 按 Esc 键先退出搜索状态回到完整列表且�
     ext.disable();
 });
 
-await reporter.run('13.5 鼠标点击弹窗外、搜索栏或弹窗内非历史记录项目区域，先退出搜索状态而不关闭弹窗', async () => {
+await reporter.run('13.5 鼠标点击弹窗外或弹窗内非历史记录项目区域，先退出搜索状态而不关闭弹窗', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -3603,14 +3622,15 @@ await reporter.run('13.5 鼠标点击弹窗外、搜索栏或弹窗内非历史�
     assert(ext._inSearchMode === false, '点击底部页码栏先退出搜索状态');
     assert(ext._container !== null, '弹窗未关闭');
 
-    // 4. 点击搜索栏区域 (搜索框不支持光标，点击直接退出搜索状态)
+    // 4. 点击搜索栏区域 (保持搜索状态，聚焦输入框，绝不退出搜索，绝不冻结)
     ext._enterSearchMode('Note');
     assert(ext._inSearchMode === true, '处于搜索状态');
-    assert(ext._searchEntry.can_focus === false, '搜索显示标签不可聚焦，无光标');
-    assert(ext._searchEntry.reactive === false, '搜索显示标签非 reactive');
+    assert(ext._searchEntry.can_focus === true, '搜索输入框可聚焦');
+    assert(ext._searchEntry.reactive === true, '搜索输入框为 reactive');
     ext._searchBar.emit('button-press-event', { get_button: () => 1 });
-    assert(ext._inSearchMode === false, '点击搜索栏先退出搜索状态');
+    assert(ext._inSearchMode === true, '点击搜索栏依然保持搜索状态，不退出搜索');
     assert(ext._container !== null, '弹窗未关闭');
+    assert(ext._searchEntry.has_focus === true, '点击搜索栏聚焦输入框');
 
     ext._closePopup();
     ext.disable();
@@ -3651,6 +3671,56 @@ await reporter.run('13.6 搜索状态支持循环翻页，结果以记录顺序�
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Return, get_state: () => 0 });
     assert(ext._container === null, 'Enter 恢复后弹窗关闭');
     assert(ext._isRestoring === false, '恢复流程顺利结束');
+
+    ext.disable();
+});
+
+await reporter.run('13.7 原生输入法 (IME commit) 上屏与剪贴板文本粘贴实时触发检索，鼠标点击搜索框正常聚焦且绝不冻结测试', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['text/plain'], new TextEncoder().encode('中华人民共和国')));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['text/plain'], new TextEncoder().encode('中华美食')));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, new MockSelectionSource(['text/plain'], new TextEncoder().encode('English Note')));
+
+    ext._openPopup();
+
+    // 1. 模拟输入法（IME）提交中文字符串上屏
+    ext._enterSearchMode('');
+    assert(ext._inSearchMode === true, '进入搜索状态');
+    assert(ext._searchEntry.can_focus === true, '输入框可聚焦');
+
+    // 模拟输入法提交 "中华" (commit_text / insert_text 触发 text-changed)
+    ext._searchEntry.clutter_text.insert_text('中华', -1);
+    assert(ext.searchQuery === '中华', '搜索词实时同步为 中华');
+    const matched = ext._getSortedEntries();
+    assert(matched.length === 2, `精准匹配 2 个包含“中华”的项目，实际: ${matched.length}`);
+
+    // 2. 模拟鼠标点击搜索框获得焦点后，继续输入，绝不冻结
+    ext._searchEntry.emit('button-press-event', { get_button: () => 1 });
+    assert(ext._inSearchMode === true, '点击搜索框依然保持搜索模式');
+
+    // 继续键入 "美食"
+    ext._searchEntry.clutter_text.insert_text('美食', -1);
+    assert(ext.searchQuery === '中华美食', '搜索词追加为 中华美食');
+    const matched2 = ext._getSortedEntries();
+    assert(matched2.length === 1, `精准筛选出 1 个项目，实际: ${matched2.length}`);
+    assert(matched2[0].preview.includes('中华美食'), '匹配中华美食条目');
+
+    // 3. 模拟剪贴板粘贴与全选替换 (Ctrl+V / set_text)
+    ext._searchEntry.set_text('English');
+    assert(ext.searchQuery === 'English', '粘贴后搜索词更新为 English');
+    const matched3 = ext._getSortedEntries();
+    assert(matched3.length === 1, '匹配 English Note');
+
+    // 4. 聚焦状态下通过 Up/Down 在条目间选择，Enter 确认恢复并关闭弹窗
+    const downEvent = { get_key_symbol: () => Clutter.KEY_Down, get_state: () => 0 };
+    ext._searchEntry.clutter_text.emit('key-press-event', downEvent);
+    assert(ext._selectedIndex === 0, '选中当前唯一的条目');
+
+    const enterEvent = { get_key_symbol: () => Clutter.KEY_Return, get_state: () => 0 };
+    ext._searchEntry.clutter_text.emit('key-press-event', enterEvent);
+    assert(ext._container === null, '按 Enter 恢复条目并关闭弹窗');
 
     ext.disable();
 });
