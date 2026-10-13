@@ -3484,7 +3484,8 @@ await reporter.run('13.3 搜索框字符删光时不退出搜索状态，但显�
 
     assert(ext._inSearchMode === true, '字符删光时依然处于搜索状态，绝不退出搜索');
     assert(ext.searchQuery === '', '搜索词变为空');
-    assert(ext._searchEntry.text === '', '搜索输入框为空');
+    assert(ext._searchEntry.text === '搜索预览内容...', '搜索输入框显示占位词');
+    assert(ext._searchEntry.style_classes.includes('hint'), '搜索输入框带有 hint 样式类');
     assert(ext._getSortedEntries().length === 0, '搜索词为空时返回 0 项 (空列表)');
     assert(ext._emptyLabel && ext._emptyLabel.visible === true, '显示空列表标签');
     assert(ext._emptyLabel.text === '无匹配项目', `空标签文本应为 无匹配项目，实际: ${ext._emptyLabel.text}`);
@@ -3522,7 +3523,7 @@ await reporter.run('13.4 按 Esc 键先退出搜索状态回到完整列表且�
     ext.disable();
 });
 
-await reporter.run('13.5 鼠标点击弹窗外或弹窗内非历史记录项目区域，先退出搜索状态而不关闭弹窗', async () => {
+await reporter.run('13.5 鼠标点击弹窗外、搜索栏或弹窗内非历史记录项目区域，先退出搜索状态而不关闭弹窗', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -3548,6 +3549,15 @@ await reporter.run('13.5 鼠标点击弹窗外或弹窗内非历史记录项目�
     assert(ext._inSearchMode === true, '处于搜索状态');
     ext._pageBar.emit('button-press-event', { get_button: () => 1 });
     assert(ext._inSearchMode === false, '点击底部页码栏先退出搜索状态');
+    assert(ext._container !== null, '弹窗未关闭');
+
+    // 4. 点击搜索栏区域 (搜索框不支持光标，点击直接退出搜索状态)
+    ext._enterSearchMode('Note');
+    assert(ext._inSearchMode === true, '处于搜索状态');
+    assert(ext._searchEntry.can_focus === false, '搜索显示标签不可聚焦，无光标');
+    assert(ext._searchEntry.reactive === false, '搜索显示标签非 reactive');
+    ext._searchBar.emit('button-press-event', { get_button: () => 1 });
+    assert(ext._inSearchMode === false, '点击搜索栏先退出搜索状态');
     assert(ext._container !== null, '弹窗未关闭');
 
     ext._closePopup();

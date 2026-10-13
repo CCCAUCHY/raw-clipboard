@@ -73,9 +73,8 @@
     font-size: 0.88em;
 }
 
-.raw-clipboard-search-entry:focus {
-    border: none;
-    box-shadow: none;
+.raw-clipboard-search-entry.hint {
+    color: rgba(255, 255, 255, 0.45);
 }
 
 .raw-clipboard-list {

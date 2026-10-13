@@ -567,17 +567,23 @@ export default class RawClipboardExtension extends Extension {
         return entry.type === 'text' || entry.type === 'html' || entry.type === 'files';
     }
 
+    _updateSearchDisplay() {
+        if (!this._searchEntry) return;
+        if (this._searchQuery && this._searchQuery.length > 0) {
+            this._searchEntry.set_text(this._searchQuery);
+            this._searchEntry.remove_style_class_name('hint');
+        } else {
+            this._searchEntry.set_text('搜索预览内容...');
+            this._searchEntry.add_style_class_name('hint');
+        }
+    }
+
     _enterSearchMode(initialChar = '') {
         this._inSearchMode = true;
         this._searchQuery = initialChar;
         if (this._sortBar) this._sortBar.hide();
         if (this._searchBar) this._searchBar.show();
-        if (this._searchEntry) {
-            this._searchEntry.set_text(this._searchQuery);
-            if (this._searchEntry.clutter_text) {
-                this._searchEntry.clutter_text.set_cursor_position(-1);
-            }
-        }
+        this._updateSearchDisplay();
         this._currentPage = 0;
         this._selectedIndex = 0;
         this._renderPage();
@@ -590,6 +596,7 @@ export default class RawClipboardExtension extends Extension {
         this._searchQuery = '';
         if (this._searchEntry) {
             this._searchEntry.set_text('');
+            this._searchEntry.remove_style_class_name('hint');
         }
         if (this._searchBar) this._searchBar.hide();
         if (this._sortBar) this._sortBar.show();
@@ -1897,27 +1904,34 @@ export default class RawClipboardExtension extends Extension {
                 y_align: Clutter.ActorAlign.CENTER,
                 visible: false,
             });
-            this._searchBar.connect('button-press-event', () => Clutter.EVENT_STOP);
+            this._searchBar.connect('button-press-event', () => {
+                if (this._inSearchMode) {
+                    this._exitSearchMode();
+                }
+                return Clutter.EVENT_STOP;
+            });
 
             const searchIcon = new St.Icon({
                 icon_name: 'system-search-symbolic',
                 icon_size: 14,
                 style_class: 'raw-clipboard-search-icon',
                 y_align: Clutter.ActorAlign.CENTER,
+                reactive: false,
             });
 
-            this._searchEntry = new St.Entry({
-                style_class: 'raw-clipboard-search-entry',
-                hint_text: '搜索预览内容...',
-                can_focus: true,
-                reactive: true,
+            // 搜索显示标签：仅响应键盘输入，纯展示无光标，不支持光标闪烁与文本选择
+            this._searchEntry = new St.Label({
+                style_class: 'raw-clipboard-search-entry hint',
+                text: '搜索预览内容...',
+                reactive: false,
+                can_focus: false,
                 x_expand: true,
                 y_align: Clutter.ActorAlign.CENTER,
             });
             if (this._searchEntry.clutter_text) {
                 this._searchEntry.clutter_text.use_markup = false;
+                this._searchEntry.clutter_text.ellipsize = Pango.EllipsizeMode.END;
             }
-            this._searchEntry.connect('button-press-event', () => Clutter.EVENT_STOP);
 
             this._searchBar.add_child(searchIcon);
             this._searchBar.add_child(this._searchEntry);
@@ -2652,12 +2666,7 @@ export default class RawClipboardExtension extends Extension {
             if (this._inSearchMode) {
                 if (this._searchQuery.length > 0) {
                     this._searchQuery = this._searchQuery.slice(0, -1);
-                    if (this._searchEntry) {
-                        this._searchEntry.set_text(this._searchQuery);
-                        if (this._searchEntry.clutter_text) {
-                            this._searchEntry.clutter_text.set_cursor_position(-1);
-                        }
-                    }
+                    this._updateSearchDisplay();
                     this._currentPage = 0;
                     this._selectedIndex = 0;
                     this._renderPage();
@@ -2769,12 +2778,7 @@ export default class RawClipboardExtension extends Extension {
                 return Clutter.EVENT_STOP;
             } else {
                 this._searchQuery += char;
-                if (this._searchEntry) {
-                    this._searchEntry.set_text(this._searchQuery);
-                    if (this._searchEntry.clutter_text) {
-                        this._searchEntry.clutter_text.set_cursor_position(-1);
-                    }
-                }
+                this._updateSearchDisplay();
                 this._currentPage = 0;
                 this._selectedIndex = 0;
                 this._renderPage();
