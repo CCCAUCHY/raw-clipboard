@@ -2529,7 +2529,7 @@ await reporter.run('10.6 条目对象冻结属性只读验证 (Object.freeze 保
     }, TypeError, '条目对象属性不可修改');
 });
 
-await reporter.run('10.7 日志开关功能验证 (enable-logging 关闭时静默，开启时按需输出)', async () => {
+await reporter.run('10.7 日志开关功能验证 (enable-logging 关闭时静默，开启时按需输出与严禁泄露 preview 手令)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -2544,6 +2544,20 @@ await reporter.run('10.7 日志开关功能验证 (enable-logging 关闭时静�
     assert(ext._isLoggingEnabled() === true, '开启后日志状态为 true');
     ext._log('test log enabled');
     ext._warn('test warn enabled');
+
+    // 验证方案 B 日志格式化脱敏：严禁泄露 preview 文本内容，仅输出 ID、MD5 截断、类型与大小
+    const secretEntry = {
+        id: '123_456',
+        preview: 'MY_SUPER_SECRET_PASSWORD_123456',
+        type: 'text',
+        size: 32,
+        checksum: '9e107d9d372bb6826bd81d3542a419d6',
+    };
+    const logStr = ext._formatEntryLog(secretEntry);
+    assert(!logStr.includes('MY_SUPER_SECRET_PASSWORD'), '日志输出必须严禁包含任何 preview 明文手令或密码！');
+    assert(logStr.includes('123_456'), '日志输出应包含条目 ID');
+    assert(logStr.includes('9e107d9d'), '日志输出应包含 MD5 前 8 位摘要');
+    assert(logStr.includes('32B'), '日志输出应包含条目大小');
 
     ext._settings.set_boolean('enable-logging', false);
     assert(ext._isLoggingEnabled() === false, '恢复后日志处于关闭状态');

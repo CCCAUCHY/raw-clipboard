@@ -889,6 +889,20 @@ export default class RawClipboardExtension extends Extension {
         this._log(...args);
     }
 
+    _formatEntryLog(entry) {
+        if (!entry) return '[空条目]';
+        const id = entry.id || 'unknown';
+        const type = entry.type || 'unknown';
+        const size = typeof entry.size === 'number' ? entry.size : (entry.bytes?.get_size ? entry.bytes.get_size() : 0);
+        let md5 = 'none';
+        try {
+            if (entry.checksum) {
+                md5 = String(entry.checksum).slice(0, 8);
+            }
+        } catch (_e) {}
+        return `[条目#${id} (MD5:${md5}, ${type}, ${size}B)]`;
+    }
+
     // 队首条目 (#history[0]) 即为最后一次入库、回灌或提升的内容，通过 getter 动态派生，
     // 避免独立维护冗余状态导致与队列状态不一致
     get _lastChecksum() {
@@ -1571,9 +1585,9 @@ export default class RawClipboardExtension extends Extension {
                         this.#history.splice(existingIdx, 1);
                     }
                     this.#history.unshift(existing);
-                    this._log(`[RawClipboard] 命中历史相同条目，LRU 提升至队首: "${existing.preview}"`);
+                    this._log(`[RawClipboard] 命中历史相同条目，LRU 提升至队首: ${this._formatEntryLog(existing)}`);
                 } else {
-                    this._debug(`[RawClipboard] 命中队首相同条目（连续复制），更新时间戳: "${existing.preview}"`);
+                    this._debug(`[RawClipboard] 命中队首相同条目（连续复制），更新时间戳: ${this._formatEntryLog(existing)}`);
                 }
 
                 if (this._popup && this._popup.visible) {
@@ -1592,7 +1606,7 @@ export default class RawClipboardExtension extends Extension {
             }
 
             this.#history.unshift(insertResult.newEntry);
-            this._log(`[RawClipboard] 成功记录新剪贴板条目: "${insertResult.newEntry.preview}" (类型: ${core.type}, 大小: ${size} 字节)，当前历史总数: ${this.#history.length}`);
+            this._log(`[RawClipboard] 成功记录新剪贴板条目: ${this._formatEntryLog(insertResult.newEntry)}，当前历史总数: ${this.#history.length}`);
             this._enforceLimit();
             gBytes = null;
 
@@ -1650,7 +1664,7 @@ export default class RawClipboardExtension extends Extension {
             const item = this.#history[i];
             const size = typeof item.size === 'number' ? item.size : (item.bytes ? item.bytes.get_size() : 0);
             if (size > maxSingleBytes) {
-                this._log(`[RawClipboard] 条目超出单项容量限制 (${rawMaxMb} MB)，移除该条目: "${item.preview}" (${size} 字节)`);
+                this._log(`[RawClipboard] 条目超出单项容量限制 (${rawMaxMb} MB)，移除该条目: ${this._formatEntryLog(item)}`);
                 this.#history.splice(i, 1);
                 this.#radixTree.remove(item);
                 if (this.#deletedEntries.has(item)) {
@@ -1664,7 +1678,7 @@ export default class RawClipboardExtension extends Extension {
         while (this.#history.length > maxItems) {
             const popped = this.#history.pop();
             if (popped) {
-                this._log(`[RawClipboard] 超过最大历史条数限制 (${maxItems} 条)，淘汰最旧条目: "${popped.preview}" (大小: ${popped.size} 字节)`);
+                this._log(`[RawClipboard] 超过最大历史条数限制 (${maxItems} 条)，淘汰最旧条目: ${this._formatEntryLog(popped)}`);
                 this.#radixTree.remove(popped);
                 if (this.#deletedEntries.has(popped)) {
                     this.#deletedEntries.delete(popped);
@@ -1678,7 +1692,7 @@ export default class RawClipboardExtension extends Extension {
         while (this.#history.length > 0 && totalBytes > maxTotalBytes) {
             const popped = this.#history.pop();
             if (popped) {
-                this._log(`[RawClipboard] 超过历史总内存上限 (${maxTotalMb} MB)，淘汰最旧条目: "${popped.preview}" (大小: ${popped.size} 字节)`);
+                this._log(`[RawClipboard] 超过历史总内存上限 (${maxTotalMb} MB)，淘汰最旧条目: ${this._formatEntryLog(popped)}`);
                 this.#radixTree.remove(popped);
                 if (this.#deletedEntries.has(popped)) {
                     this.#deletedEntries.delete(popped);
@@ -1699,7 +1713,7 @@ export default class RawClipboardExtension extends Extension {
     _restoreEntry(entry) {
         const entrySize = typeof entry?.size === 'number' ? entry.size : (entry?.bytes?.get_size ? entry.bytes.get_size() : 0);
         if (entrySize <= 0) return;
-        this._log(`[RawClipboard] 正在恢复条目至系统剪贴板: "${entry.preview}" (MIME: ${entry.mime}, 大小: ${entrySize} 字节)`);
+        this._log(`[RawClipboard] 正在恢复条目至系统剪贴板: ${this._formatEntryLog(entry)} (MIME: ${entry.mime})`);
 
         try {
             if (this.#deletedEntries.has(entry)) {
@@ -1790,7 +1804,7 @@ export default class RawClipboardExtension extends Extension {
 
         this.#deletedEntries.add(entry);
         this._undoStack.push(entry);
-        this._debug(`[RawClipboard] 暂存删除历史条目: "${entry.preview}" (待删除条目数: ${this.#deletedEntries.size})`);
+        this._debug(`[RawClipboard] 暂存删除历史条目: ${this._formatEntryLog(entry)} (待删除条目数: ${this.#deletedEntries.size})`);
 
         const remainingCount = sortedEntries.length - 1;
         const totalPages = Math.max(1, Math.ceil(remainingCount / 8));
@@ -1816,7 +1830,7 @@ export default class RawClipboardExtension extends Extension {
         if (!entry) return false;
 
         this.#deletedEntries.delete(entry);
-        this._debug(`[RawClipboard] 撤销删除，已恢复条目: "${entry.preview}"`);
+        this._debug(`[RawClipboard] 撤销删除，已恢复条目: ${this._formatEntryLog(entry)}`);
 
         const sortedEntries = this._getSortedEntries();
         const sortedIndex = sortedEntries.indexOf(entry);
