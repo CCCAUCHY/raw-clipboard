@@ -409,6 +409,8 @@ export class RadixNode {
 }
 
 export class RadixRawTree {
+    #nodeByEntry = new WeakMap();
+
     constructor() {
         this._roots = new Map(); // mime -> RadixNode
     }
@@ -432,6 +434,11 @@ export class RadixRawTree {
         return this._roots.size;
     }
 
+    getNode(entry) {
+        if (!entry) return null;
+        return this.#nodeByEntry.get(entry) || entry._radixNode || null;
+    }
+
     insert(mime, gBytes, entryBuilder) {
         const root = this._getRoot(mime);
         const totalLen = gBytes.get_size();
@@ -447,6 +454,7 @@ export class RadixRawTree {
                 }
                 const entry = entryBuilder(currNode);
                 currNode.entry = entry;
+                this.#nodeByEntry.set(entry, currNode);
                 return { isDuplicate: false, newEntry: entry };
             }
 
@@ -456,6 +464,7 @@ export class RadixRawTree {
                 const leaf = new RadixNode(leafBytes, currNode);
                 const entry = entryBuilder(leaf);
                 leaf.entry = entry;
+                this.#nodeByEntry.set(entry, leaf);
                 currNode.children.set(firstByte, leaf);
                 return { isDuplicate: false, newEntry: entry };
             }
@@ -487,12 +496,14 @@ export class RadixRawTree {
             if (offset === totalLen) {
                 const entry = entryBuilder(splitNode);
                 splitNode.entry = entry;
+                this.#nodeByEntry.set(entry, splitNode);
                 return { isDuplicate: false, newEntry: entry };
             } else {
                 const newSuffixBytes = makeSliceBytes(gBytes, uIncoming, offset, totalLen - offset);
                 const newLeaf = new RadixNode(newSuffixBytes, splitNode);
                 const entry = entryBuilder(newLeaf);
                 newLeaf.entry = entry;
+                this.#nodeByEntry.set(entry, newLeaf);
                 splitNode.children.set(uIncoming[offset], newLeaf);
                 return { isDuplicate: false, newEntry: entry };
             }
@@ -500,8 +511,10 @@ export class RadixRawTree {
     }
 
     remove(entry) {
-        if (!entry || !entry._radixNode) return;
-        const node = entry._radixNode;
+        if (!entry) return;
+        const node = this.#nodeByEntry.get(entry) || entry._radixNode;
+        if (!node) return;
+        this.#nodeByEntry.delete(entry);
         node.entry = null;
 
         let curr = node;
@@ -530,6 +543,7 @@ export class RadixRawTree {
 
     clear() {
         this._roots.clear();
+        this.#nodeByEntry = new WeakMap();
     }
 }
 
@@ -790,6 +804,10 @@ export default class RawClipboardExtension extends Extension {
 
     _getEntry(index) {
         return this.#history[index] || null;
+    }
+
+    _getRadixNode(entry) {
+        return this.#radixTree ? this.#radixTree.getNode(entry) : null;
     }
 
     enable() {
@@ -1362,12 +1380,14 @@ export default class RawClipboardExtension extends Extension {
                 const thisRef = this;
                 let entryTime = copyTime;
 
+                // 注意：entry.bytes/checksum/thumbIcon 采用惰性物化与按需缓存；
+                // 前缀树在后续分裂重构时，各次访问内容恒定等价，但 bytes 对象身份可能按需更新。
+                // 条目本身作为纯净只读视图冻结，不向外部泄露内部可变的 _radixNode。
                 return Object.freeze({
                     id: `${copyTime}_${Math.floor(Math.random() * 1000)}`,
                     type: core.type,
                     mime: core.mime,
                     size: size,
-                    _radixNode: leafNode,
                     get bytes() {
                         if (!assembledBytes) {
                             const segs = leafNode.collectPathSegments();

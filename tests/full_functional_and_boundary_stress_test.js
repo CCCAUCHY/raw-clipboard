@@ -2561,6 +2561,59 @@ await reporter.run('10.8 disable() 实例级 Cancellable 取消在途读取与�
     assert(getExtItemCount(ext) === 0, 'disable() 取消在途读取后，历史队列必须严格保持为空，严禁写回 #history');
 });
 
+await reporter.run('10.9 真实业务前缀树生成条目的 Object.freeze 冻结性与 _radixNode 无暴露安全封装测试', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    const testPayload = new TextEncoder().encode('Hello Secure Freezing');
+    const src = new MockSelectionSource(['text/plain'], testPayload);
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src);
+
+    assert(getExtItemCount(ext) === 1, '条目成功入队');
+    const realEntry = ext._getEntry(0);
+    assert(realEntry !== null, '真实条目实例存在');
+
+    // 1. 真实条目必须被 Object.isFrozen 深度冻结
+    assert(Object.isFrozen(realEntry) === true, '真实的业务条目对象必须被 Object.freeze 冻结');
+
+    // 2. 真实条目绝不可暴露可变的 _radixNode
+    assert(realEntry._radixNode === undefined, '真实条目绝无 _radixNode 属性');
+    assert(!('_radixNode' in realEntry), 'in 操作符无法找到 _radixNode');
+
+    // 3. 严格模式下尝试修改真实条目属性必须抛出 TypeError
+    assertThrows(() => {
+        'use strict';
+        realEntry.id = 'tampered_id';
+    }, TypeError, '修改真实条目 id 抛出 TypeError');
+
+    assertThrows(() => {
+        'use strict';
+        realEntry._radixNode = { hacked: true };
+    }, TypeError, '给真实条目注入 _radixNode 抛出 TypeError');
+
+    assertThrows(() => {
+        'use strict';
+        delete realEntry.type;
+    }, TypeError, '删除真实条目属性抛出 TypeError');
+
+    assertThrows(() => {
+        'use strict';
+        realEntry.newMaliciousProp = 'attack';
+    }, TypeError, '新增属性抛出 TypeError');
+
+    // 4. 通过扩展与前缀树的安全内省方式依然能正常定位与删除节点 (走 WeakMap 映射)
+    const node = ext._getRadixNode(realEntry);
+    assert(node !== null, '通过内部 WeakMap 能精准检索对应树节点');
+    assert(node.entry === realEntry, '树节点正确反向引用该条目');
+
+    // 5. 验证删除条目能够正常运作
+    ext._deleteEntry(realEntry);
+    ext._commitPendingDeletions();
+    assert(getExtItemCount(ext) === 0, '条目能够基于 WeakMap 安全寻址并完成物理删除');
+
+    ext.disable();
+});
+
 // ============================================================================
 // SUITE 11: 慢源读取三重守卫测试 (0字节停滞超时、总体硬超时、新所有者易手抢占丢弃)
 // ============================================================================
@@ -2840,7 +2893,6 @@ await reporter.run('12.2 RadixRawTree 前缀自动分裂与多分支挂载 (三�
     function dummyEntry(node, name) {
         return {
             name,
-            _radixNode: node,
             getBytes() {
                 const segs = node.collectPathSegments();
                 if (segs.length === 1) return segs[0];
@@ -2885,10 +2937,10 @@ await reporter.run('12.3 RadixRawTree 100% 重复插入直接命中已有条目 
     const bOriginal = new GLib.Bytes(enc.encode('Repeated Payload 123'));
     const bDuplicate = new GLib.Bytes(enc.encode('Repeated Payload 123'));
 
-    const r1 = tree.insert('text/plain', bOriginal, n => ({ id: 'entry-1', _radixNode: n }));
+    const r1 = tree.insert('text/plain', bOriginal, () => ({ id: 'entry-1' }));
     assert(!r1.isDuplicate, '首次插入');
 
-    const r2 = tree.insert('text/plain', bDuplicate, n => ({ id: 'entry-dup', _radixNode: n }));
+    const r2 = tree.insert('text/plain', bDuplicate, () => ({ id: 'entry-dup' }));
     assert(r2.isDuplicate === true, '二次插入相同数据必须命中重复');
     assert(r2.existingEntry.id === 'entry-1', '返回的必须是已有条目实例');
 });
@@ -2901,12 +2953,12 @@ await reporter.run('12.4 RadixRawTree 短串作为长串前缀插入 (先长后�
     const bLong = new GLib.Bytes(enc.encode('SELECT * FROM database.users WHERE id = 1'));
     const bShort = new GLib.Bytes(enc.encode('SELECT * FROM database.users'));
 
-    const rLong = tree.insert('text/plain', bLong, n => ({ id: 'long', _radixNode: n }));
-    const rShort = tree.insert('text/plain', bShort, n => ({ id: 'short', _radixNode: n }));
+    const rLong = tree.insert('text/plain', bLong, () => ({ id: 'long' }));
+    const rShort = tree.insert('text/plain', bShort, () => ({ id: 'short' }));
 
     assert(!rLong.isDuplicate && !rShort.isDuplicate, '两者皆非重复项');
-    assert(rShort.newEntry._radixNode.entry === rShort.newEntry, '短串作为前缀节点本身挂载为条目');
-    assert(rShort.newEntry._radixNode.children.size === 1, '短串节点包含长串后缀子节点');
+    assert(tree.getNode(rShort.newEntry).entry === rShort.newEntry, '短串作为前缀节点本身挂载为条目');
+    assert(tree.getNode(rShort.newEntry).children.size === 1, '短串节点包含长串后缀子节点');
 
     // 2. 查重短串
     const rShortDup = tree.insert('text/plain', bShort, () => {});
@@ -2925,7 +2977,6 @@ await reporter.run('12.5 RadixRawTree 条目删除后沿树向上剪枝合并 (�
     function entryWithRebuild(node, id) {
         return {
             id,
-            _radixNode: node,
             getBytes() {
                 const segs = node.collectPathSegments();
                 if (segs.length === 1) return segs[0];
@@ -3053,8 +3104,10 @@ await reporter.run('12.7 惰性物化与按需组装验证 (使用 size 统计�
 
     assert(typeof item2.size === 'number' && item2.size > 0, '条目 2 具备正整数 size 属性');
     assert(typeof item1.size === 'number' && item1.size > 0, '条目 1 具备正整数 size 属性');
-    assert(item2._radixNode.collectPathSegments().length > 1, '条目 2 发生了前缀分裂，路径段数 > 1');
-    assert(item1._radixNode.collectPathSegments().length > 1, '条目 1 发生了前缀分裂，路径段数 > 1');
+    assert(ext._getRadixNode(item2).collectPathSegments().length > 1, '条目 2 发生了前缀分裂，路径段数 > 1');
+    assert(ext._getRadixNode(item1).collectPathSegments().length > 1, '条目 1 发生了前缀分裂，路径段数 > 1');
+    assert(item2._radixNode === undefined, '真实条目绝不泄露 _radixNode');
+    assert(item1._radixNode === undefined, '真实条目绝不泄露 _radixNode');
 
     ext.disable();
 });
@@ -3091,7 +3144,6 @@ await reporter.run('12.8 makeSliceBytes 独立字节切片与母体强引用彻�
     function makeEntry(node, id) {
         return {
             id,
-            _radixNode: node,
             getBytes() {
                 const segs = node.collectPathSegments();
                 if (segs.length === 1) return segs[0];
