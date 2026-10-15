@@ -1626,7 +1626,7 @@ await reporter.run('8.4 扁平化 48x48 正方形垃圾桶删除按钮与条目�
     ext._closePopup();
     assert(getExtItemCount(ext) === 0, '删除按钮 clicked 信号且退出弹窗后必须成功物理删除条目');
 
-    // 3. 非左键点击条目正文必须忽略并传播 (EVENT_PROPAGATE，不触发恢复)
+    // 3. 右键点击条目正文触发右键菜单 (被消费，严禁误触发恢复)；中键点击传播 (EVENT_PROPAGATE，不触发恢复)
     const src3 = new MockSelectionSource(['text/plain'], new TextEncoder().encode('DelBtnTest-3'));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src3);
     ext._openPopup();
@@ -1640,9 +1640,19 @@ await reporter.run('8.4 扁平化 48x48 正方形垃圾桶删除按钮与条目�
         get_coords: () => [100, 20],
     });
     let resRight = itemBox3.emit('button-press-event', makeRightClickEvent());
-    // GObject signal emit with boolean accumulator returns false when propagated (EVENT_PROPAGATE = false)
-    assert(Boolean(resRight) === false, '右键点击条目正文必须未被消费 (false/EVENT_PROPAGATE)');
+    assert(resRight === Clutter.EVENT_STOP, '右键点击条目正文被消费 (弹出上下文菜单)');
     assert(!restored && !closed, '右键点击严禁误恢复');
+    assert(ext._contextMenu !== null, '右键点击弹出菜单');
+    ext._closeContextMenu();
+
+    const makeMiddleClickEvent = () => ({
+        get_button: () => 2,
+        get_source: () => null,
+        get_coords: () => [100, 20],
+    });
+    let resMiddle = itemBox3.emit('button-press-event', makeMiddleClickEvent());
+    assert(Boolean(resMiddle) === false, '中键点击条目正文未被消费 (EVENT_PROPAGATE)');
+    assert(!restored && !closed, '中键点击严禁误恢复');
     ext._closePopup();
 
     // 4. 真实 GNOME Shell 行为：左键点击条目正文区域 -> 精准触发恢复并关闭弹窗
@@ -3872,28 +3882,24 @@ await reporter.run('13.7 纯键盘直接响应与条目左侧图标悬停搜索/
     assert(ext._searchEntry.text === '搜索预览内容...', '搜索词删空时显示占位文字');
     assert(ext._searchEntry.has_style_class_name('hint'), '占位文字带有 hint 样式类实现颜色弱化区分');
 
-    // 4. 退出搜索模式，验证条目左侧图标悬停变搜索图标，移开恢复原图标
+    // 4. 退出搜索模式，验证条目左侧图标已彻底废除悬停与点击搜索交互
     ext._exitSearchMode();
     assert(ext._inSearchMode === false, '退出搜索模式');
     assert(ext._itemSlots[0].currentEntry.preview === 'English Note', '第0槽位为最新加入的 English Note');
     const slot0Icon = ext._itemSlots[0].iconActor;
-    assert(slot0Icon.icon_name === 'edit-copy-symbolic', '未悬停时显示默认类型图标');
+    assert(slot0Icon.icon_name === 'edit-copy-symbolic', '显示默认类型图标');
+    assert(slot0Icon.reactive === false, '左侧图标彻底设为非 reactive，废除原有悬停/点击搜索');
 
-    // 悬停在图标上：图标变为 system-search-symbolic
-    slot0Icon.hover = true;
-    slot0Icon.emit('notify::hover');
-    assert(slot0Icon.icon_name === 'system-search-symbolic', '鼠标悬停在左侧图标上变为搜索放大镜图标');
-
-    // 鼠标移开：图标恢复为原条目图标
-    slot0Icon.hover = false;
-    slot0Icon.emit('notify::hover');
-    assert(slot0Icon.icon_name === 'edit-copy-symbolic', '鼠标移开后图标恢复为原始类型图标');
-
-    // 5. 点击长条目 (150 字符的 'A'...) 的左侧图标：只带入前 64 字符并覆盖搜索框
+    // 5. 右键长条目 (150 字符的 'A'...)：弹出右键菜单，点击“带入搜索”只带入前 64 字符并覆盖搜索框
     const longItemSlot = ext._itemSlots[3]; // 第 3 槽位为 150 字符的 A...
     assert(longItemSlot.currentEntry.preview.length === 150, '该条目预览长度为 150');
-    longItemSlot.iconActor.emit('button-press-event', { get_button: () => 1 });
-    assert(ext._inSearchMode === true, '点击左侧图标进入搜索状态');
+    longItemSlot.itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [100, 200] });
+    assert(ext._contextMenu !== null, '右键长条目成功弹出上下文菜单');
+    const searchBtn = ext._contextMenu.get_children()[0];
+    assert(searchBtn !== undefined, '右键菜单包含带入搜索项');
+    searchBtn.emit('button-press-event', { get_button: () => 1 });
+    assert(ext._contextMenu === null, '点击带入搜索后右键菜单关闭');
+    assert(ext._inSearchMode === true, '点击右键带入搜索进入搜索状态');
     assert(ext.searchQuery.length === 64, `带入文本被精确截断为 64 字符上限，实际: ${ext.searchQuery.length}`);
     assert(ext.searchQuery === 'A'.repeat(64), '成功带入前 64 字符');
 
@@ -3903,11 +3909,13 @@ await reporter.run('13.7 纯键盘直接响应与条目左侧图标悬停搜索/
     }
     assert(ext.searchQuery.length === 128, `搜索框严格受控于 128 字符上限，实际: ${ext.searchQuery.length}`);
 
-    // 7. 在搜索状态下，点击搜索结果槽位 0 的图标再次覆盖，验证从 128 字符被覆盖回 64 字符
-    const slot0ResIcon = ext._itemSlots[0].iconActor;
+    // 7. 在搜索状态下，右键搜索结果槽位 0 的条目再次覆盖，验证从 128 字符被覆盖回 64 字符
     assert(ext._itemSlots[0].currentEntry.preview.length === 150, '槽位0为长条目');
-    slot0ResIcon.emit('button-press-event', { get_button: () => 1 });
-    assert(ext.searchQuery.length === 64, '搜索状态下点击图标成功覆盖已有超长128字符内容为64字符');
+    ext._itemSlots[0].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [120, 220] });
+    assert(ext._contextMenu !== null, '搜索状态下右键条目0成功弹出菜单');
+    const resSearchBtn = ext._contextMenu.get_children()[0];
+    resSearchBtn.emit('button-press-event', { get_button: () => 1 });
+    assert(ext.searchQuery.length === 64, '搜索状态下右键点击带入搜索成功覆盖已有超长128字符内容为64字符');
     assert(ext.searchQuery === 'A'.repeat(64), '成功覆盖为前64字符');
 
     // 再次验证多项检索下的跨条目覆盖：
@@ -3915,8 +3923,11 @@ await reporter.run('13.7 纯键盘直接响应与条目左侧图标悬停搜索/
     ext._renderPage();
     assert(ext._itemSlots[0].currentEntry.preview === '中华美食', '槽位0为中华美食');
     assert(ext._itemSlots[1].currentEntry.preview === '中华人民共和国', '槽位1为中华人民共和国');
-    ext._itemSlots[1].iconActor.emit('button-press-event', { get_button: () => 1 });
-    assert(ext.searchQuery === '中华人民共和国', '搜索结果中点击条目1成功覆盖为该条目preview');
+    ext._itemSlots[1].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [150, 250] });
+    assert(ext._contextMenu !== null, '右键条目1成功弹出菜单');
+    const item1SearchBtn = ext._contextMenu.get_children()[0];
+    item1SearchBtn.emit('button-press-event', { get_button: () => 1 });
+    assert(ext.searchQuery === '中华人民共和国', '搜索结果中右键条目1带入搜索成功覆盖为该条目preview');
 
     // 8. Enter 确认恢复并关闭弹窗
     const enterEvent = { get_key_symbol: () => Clutter.KEY_Return, get_state: () => 0 };
@@ -4059,6 +4070,201 @@ await reporter.run('14.4 循环翻页提示多语言响应 (中文“循环？ �
     assert(ext._pageBadge.text === 'Loop? 1 / 2', '英文状态下提示 Loop? 1 / 2');
 
     // 还原设置
+    ext._settings.set_string('ui-language', 'zh-CN');
+    ext._closePopup();
+    ext.disable();
+});
+
+// ============================================================================
+// [测试套件 15] 15. 鼠标右键操作菜单与非文本项目“复制文本”深度测试
+// ============================================================================
+reporter.suite('15. 鼠标右键操作菜单与非文本项目“复制文本”深度测试');
+
+await reporter.run('15.1 右键菜单弹出、定位保护与 Esc/点击空白安全关闭测试', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    const src = new MockSelectionSource(['text/plain'], new TextEncoder().encode('RightClickTestItem'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src);
+
+    ext._openPopup();
+    assert(ext._contextMenu === null, '初始状态下无右键菜单');
+
+    // 1. 右键槽位 0
+    ext._itemSlots[0].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [150, 250] });
+    assert(ext._contextMenu !== null, '右键槽位成功弹出右键菜单');
+    const menuParent = ext._contextMenu.get_parent ? ext._contextMenu.get_parent() : ext._contextMenu.parent;
+    assert(menuParent === ext._container, '右键菜单作为模态容器子级展示');
+
+    // 2. 按 Esc 键：优先关闭右键菜单，弹窗本身保持打开
+    const escEvent = { get_key_symbol: () => Clutter.KEY_Escape, get_state: () => 0 };
+    ext._onKeyPress(escEvent);
+    assert(ext._contextMenu === null, '按 Esc 成功关闭右键菜单');
+    assert(ext._container !== null, '按 Esc 仅关闭右键菜单，弹窗主体依然保持打开');
+
+    // 3. 再次右键弹出，点击容器空白处：优先关闭右键菜单，弹窗依然保持打开
+    ext._itemSlots[0].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [150, 250] });
+    assert(ext._contextMenu !== null, '再次右键弹出菜单');
+    ext._container.emit('button-press-event', {});
+    assert(ext._contextMenu === null, '点击容器空白处关闭右键菜单');
+    assert(ext._container !== null, '点击空白处优先消费关闭右键菜单，弹窗主体保持打开');
+
+    ext._closePopup();
+    ext.disable();
+});
+
+await reporter.run('15.2 右键菜单按类型差异化选项展示测试 (非文本预览型含复制文本，纯文本与位图/未知类型不含复制文本)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 1. text
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
+        new MockSelectionSource(['text/plain'], new TextEncoder().encode('PlainTextItem')));
+    // 2. html
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
+        new MockSelectionSource(['text/html'], new TextEncoder().encode('<i>HtmlItem</i>')));
+    // 3. files
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
+        new MockSelectionSource(['text/uri-list'], new TextEncoder().encode('file:///home/user/doc.pdf\n')));
+    // 4. image
+    const pb = new GdkPixbuf.Pixbuf({ colorspace: GdkPixbuf.Colorspace.RGB, has_alpha: true, bits_per_sample: 8, width: 16, height: 16 });
+    const [, pngBuf] = pb.save_to_bufferv('png', [], []);
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
+        new MockSelectionSource(['image/png'], pngBuf));
+    // 5. raw
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
+        new MockSelectionSource(['application/x-unknown-data'], new Uint8Array([9, 8, 7])));
+
+    ext._openPopup();
+    // 队首到队尾顺序: [raw (0), image (1), files (2), html (3), text (4)]
+
+    // raw: 仅有带入搜索
+    ext._itemSlots[0].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [100, 100] });
+    assert(ext._contextMenu.get_children().length === 1, 'raw 类型右键仅 1 项 (带入搜索)');
+    ext._closeContextMenu();
+
+    // image: 仅有带入搜索
+    ext._itemSlots[1].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [100, 100] });
+    assert(ext._contextMenu.get_children().length === 1, 'image 类型右键仅 1 项 (带入搜索)');
+    ext._closeContextMenu();
+
+    // text: 仅有带入搜索 (本身已是文本，不提供冗余的复制文本)
+    ext._itemSlots[4].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [100, 100] });
+    assert(ext._contextMenu.get_children().length === 1, 'text 文本类型右键仅 1 项 (带入搜索)');
+    ext._closeContextMenu();
+
+    // html: 非文本但以文本预览，必须包含带入搜索和复制文本
+    ext._itemSlots[3].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [100, 100] });
+    assert(ext._contextMenu.get_children().length === 2, 'html 富文本类型右键展示 2 项 (带入搜索 + 复制文本)');
+    ext._closeContextMenu();
+
+    // files: 非文本但以文本预览，必须包含带入搜索和复制文本
+    ext._itemSlots[2].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [100, 100] });
+    assert(ext._contextMenu.get_children().length === 2, 'files 文件类型右键展示 2 项 (带入搜索 + 复制文本)');
+    ext._closeContextMenu();
+
+    ext._closePopup();
+    ext.disable();
+});
+
+await reporter.run('15.3 富文本 (HTML) “复制文本”功能测试 (标签剥离、回灌守卫防自读、剪贴板与队首内容代码级绝对一致)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 写入富文本 HTML
+    const htmlPayload = '<p>Welcome to <b>Deepmind</b> &amp; RawClipboard!</p>';
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
+        new MockSelectionSource(['text/html'], new TextEncoder().encode(htmlPayload)));
+
+    assert(ext._getVisibleEntries().length === 1, '初始 1 项 HTML 记录');
+    assert(ext._getVisibleEntries()[0].type === 'html', '初始为 html 类型');
+
+    ext._openPopup();
+    // 右键 HTML 条目
+    ext._itemSlots[0].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [100, 100] });
+    const copyBtn = ext._contextMenu.get_children()[1]; // 第二项为“复制文本”
+    assert(copyBtn !== undefined, '存在复制文本按钮');
+
+    // 点击复制文本
+    copyBtn.emit('button-press-event', { get_button: () => 1 });
+
+    // 验证：弹窗与右键菜单已安全关闭
+    assert(ext._contextMenu === null, '右键菜单已关闭');
+    assert(ext._container === null, '弹窗已关闭');
+
+    // 验证：队首成功添加一项相同的纯文本记录
+    assert(ext._getVisibleEntries().length === 2, '历史记录总数增加至 2 项');
+    const newHead = ext._getVisibleEntries()[0];
+    assert(newHead.type === 'text', '队首新增条目类型为 text');
+    assert(newHead.mime === 'text/plain;charset=utf-8', 'MIME 为 text/plain;charset=utf-8');
+
+    // 验证纯文本剥离与实体解析正确性
+    const decodedText = new TextDecoder().decode(newHead.bytes.get_data ? newHead.bytes.get_data() : newHead.bytes.toArray());
+    assert(decodedText === 'Welcome to Deepmind & RawClipboard!', `提取并注入的纯文本应去除标签并还原实体，实际: ${decodedText}`);
+    assert(newHead.preview === 'Welcome to Deepmind & RawClipboard!', '条目预览与注入文本一致');
+
+    ext.disable();
+});
+
+await reporter.run('15.4 文件列表 (Files) “复制文本”功能测试 (URI转标准文件路径、多文件换行连接、队首入库一致性)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 写入 2 个文件路径 (含中文与空格转义)
+    const filesPayload = [
+        'copy',
+        'file:///home/vmuser/first_file.png',
+        'file:///home/vmuser/second%20document%20%E6%B5%8B%E8%AF%95.pdf',
+    ].join('\n');
+
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
+        new MockSelectionSource(['text/uri-list'], new TextEncoder().encode(filesPayload)));
+
+    assert(ext._getVisibleEntries()[0].type === 'files', '初始条目为 files 类型');
+
+    ext._openPopup();
+    // 右键条目
+    ext._itemSlots[0].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [100, 100] });
+    const copyBtn = ext._contextMenu.get_children()[1];
+    copyBtn.emit('button-press-event', { get_button: () => 1 });
+
+    // 验证入库纯文本
+    assert(ext._getVisibleEntries().length === 2, '队列增加至 2 项');
+    const newHead = ext._getVisibleEntries()[0];
+    assert(newHead.type === 'text', '队首新条目为 text 类型');
+
+    const decoded = new TextDecoder().decode(newHead.bytes.get_data ? newHead.bytes.get_data() : newHead.bytes.toArray());
+    const expected = '/home/vmuser/first_file.png\n/home/vmuser/second document 测试.pdf';
+    assert(decoded === expected, `多文件路径应转换本地标准路径并多行拼接，实际: ${decoded}`);
+
+    ext.disable();
+});
+
+await reporter.run('15.5 右键菜单多语言切换测试 (中文“带入搜索”/“复制文本”与英文“Search Preview”/“Copy Text”)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
+        new MockSelectionSource(['text/html'], new TextEncoder().encode('<b>LangTest</b>')));
+
+    // 1. 中文状态下右键
+    ext._openPopup();
+    ext._itemSlots[0].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [100, 100] });
+    const searchLabelZh = ext._contextMenu.get_children()[0].child.get_children()[1].text;
+    const copyLabelZh = ext._contextMenu.get_children()[1].child.get_children()[1].text;
+    assert(searchLabelZh === '带入搜索', '中文状态下按钮0为 带入搜索');
+    assert(copyLabelZh === '复制文本', '中文状态下按钮1为 复制文本');
+    ext._closeContextMenu();
+
+    // 2. 切换至英文
+    ext._settings.set_string('ui-language', 'en-US');
+    ext._itemSlots[0].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [100, 100] });
+    const searchLabelEn = ext._contextMenu.get_children()[0].child.get_children()[1].text;
+    const copyLabelEn = ext._contextMenu.get_children()[1].child.get_children()[1].text;
+    assert(searchLabelEn === 'Search Preview', '英文状态下按钮0为 Search Preview');
+    assert(copyLabelEn === 'Copy Text', '英文状态下按钮1为 Copy Text');
+
+    // 还原
     ext._settings.set_string('ui-language', 'zh-CN');
     ext._closePopup();
     ext.disable();

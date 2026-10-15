@@ -580,6 +580,7 @@ export default class RawClipboardExtension extends Extension {
     _searchQuery = '';
     _searchBar = null;
     _searchEntry = null;
+    _contextMenu = null;
 
     get inSearchMode() {
         return this._inSearchMode;
@@ -592,6 +593,62 @@ export default class RawClipboardExtension extends Extension {
     _isTextPreviewable(entry) {
         if (!entry) return false;
         return entry.type === 'text' || entry.type === 'html' || entry.type === 'files';
+    }
+
+    // 提取条目的纯文本形式 (用于“复制文本”注入剪贴板与历史入库)
+    _extractTextForm(entry) {
+        if (!entry) return '';
+        if (entry.type === 'text') {
+            try {
+                const data = entry.bytes.get_data ? entry.bytes.get_data() : entry.bytes.toArray();
+                return Utf8Decoder.decode(data);
+            } catch (_) {
+                return entry.preview || '';
+            }
+        }
+        if (entry.type === 'html') {
+            try {
+                const data = entry.bytes.get_data ? entry.bytes.get_data() : entry.bytes.toArray();
+                const raw = Utf8Decoder.decode(data);
+                // 剥离 HTML 标签并将换行/段落标签转换为换行，还原纯文本内容
+                let s = raw.replace(/<br\s*\/?>/gi, '\n')
+                           .replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n')
+                           .replace(/<[^>]+>/g, '')
+                           .replace(/&nbsp;/gi, ' ')
+                           .replace(/&amp;/gi, '&')
+                           .replace(/&lt;/gi, '<')
+                           .replace(/&gt;/gi, '>')
+                           .replace(/&quot;/gi, '"')
+                           .replace(/&#39;/gi, "'");
+                const clean = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim();
+                return clean || (entry.preview || '');
+            } catch (_) {
+                return entry.preview || '';
+            }
+        }
+        if (entry.type === 'files') {
+            try {
+                const data = entry.bytes.get_data ? entry.bytes.get_data() : entry.bytes.toArray();
+                const raw = Utf8Decoder.decode(data);
+                const lines = raw.split('\n')
+                    .map(l => l.trim())
+                    .filter(l => l && !l.startsWith('#') && l !== 'copy' && l !== 'cut');
+                const paths = lines.map(uri => {
+                    try {
+                        if (uri.startsWith('file://')) {
+                            const [p] = GLib.filename_from_uri(uri);
+                            if (p) return p;
+                        }
+                    } catch (_) {}
+                    return uri;
+                });
+                if (paths.length > 0) {
+                    return paths.join('\n');
+                }
+            } catch (_) {}
+            return entry.preview || '';
+        }
+        return entry.preview || '';
     }
 
     _getLanguage() {
@@ -694,6 +751,9 @@ export default class RawClipboardExtension extends Extension {
     }
 
     _applyLanguage() {
+        if (this._contextMenu) {
+            this._closeContextMenu();
+        }
         const isEn = this._getLanguage() === 'en-US';
         if (this._sortButtons) {
             const labels = {
@@ -1138,6 +1198,7 @@ export default class RawClipboardExtension extends Extension {
         }
 
         // 6. 立即销毁弹窗（无需等待动画）
+        this._closeContextMenu();
         if (this._grab) {
             Main.popModal(this._grab);
             this._grab = null;
@@ -1830,6 +1891,126 @@ export default class RawClipboardExtension extends Extension {
         }
     }
 
+    _copyTextFromEntry(entry) {
+        if (!entry) return;
+        const text = this._extractTextForm(entry);
+        if (!text || text.length === 0) return;
+
+        const encoder = new TextEncoder();
+        const textBytes = new GLib.Bytes(encoder.encode(text));
+        const mime = 'text/plain;charset=utf-8';
+        const copyTime = Date.now();
+
+        // 1. 生成单次回环标识并挂载至数据源对象，回灌守卫照常工作
+        const nonce = GLib.uuid_string_random();
+        this.#activeNonces.add(nonce);
+        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+            this.#activeNonces.delete(nonce);
+            return GLib.SOURCE_REMOVE;
+        });
+
+        this._isRestoring = true;
+        try {
+            let source = null;
+            if (Meta && Meta.SelectionSourceMemory && typeof Meta.SelectionSourceMemory.new === 'function') {
+                try {
+                    source = Meta.SelectionSourceMemory.new(mime, textBytes);
+                } catch (_e) {}
+            }
+            if (source) {
+                source[RESTORE_NONCE] = nonce;
+                if (this._selection && typeof this._selection.set_owner === 'function') {
+                    this._selection.set_owner(Meta.SelectionType.SELECTION_CLIPBOARD, source);
+                } else {
+                    const clipboard = St.Clipboard.get_default();
+                    clipboard.set_content(St.ClipboardType.CLIPBOARD, mime, textBytes);
+                }
+            } else {
+                const clipboard = St.Clipboard.get_default();
+                clipboard.set_content(St.ClipboardType.CLIPBOARD, mime, textBytes);
+            }
+            this._debug(`[RawClipboard] 复制文本：成功将文本形式注入系统剪贴板并挂载防回环标识`);
+        } finally {
+            this._isRestoring = false;
+        }
+
+        // 2. 通过代码确保注入剪贴板的内容和添加到队首的内容一致
+        const size = textBytes.get_size();
+        const thisRef = this;
+        const insertResult = this.#radixTree.insert(mime, textBytes, leafNode => {
+            const previewInfo = generatePreview('text', mime, textBytes, null, thisRef._getLanguage());
+            let assembledBytes = (leafNode.collectPathSegments().length === 1 ? leafNode.bytes : null);
+            let cachedChecksum = null;
+            let entryTime = copyTime;
+
+            return Object.freeze({
+                id: `${copyTime}_${Math.floor(Math.random() * 1000)}`,
+                type: 'text',
+                mime: mime,
+                size: size,
+                get bytes() {
+                    if (!assembledBytes) {
+                        const segs = leafNode.collectPathSegments();
+                        if (segs.length === 1) {
+                            assembledBytes = segs[0];
+                        } else {
+                            const out = Gio.MemoryOutputStream.new_resizable();
+                            for (const s of segs) {
+                                out.write_bytes(s, null);
+                            }
+                            out.close(null);
+                            assembledBytes = out.steal_as_bytes();
+                        }
+                    }
+                    return assembledBytes;
+                },
+                get checksum() {
+                    if (!cachedChecksum) {
+                        cachedChecksum = GLib.compute_checksum_for_bytes(GLib.ChecksumType.MD5, this.bytes);
+                    }
+                    return cachedChecksum;
+                },
+                get thumbIcon() {
+                    return null;
+                },
+                preview: previewInfo.title,
+                subtitle: previewInfo.subtitle,
+                icon: previewInfo.icon,
+                get time() { return entryTime; },
+                set time(val) { if (typeof val === 'number') entryTime = val; },
+            });
+        });
+
+        if (insertResult.isDuplicate) {
+            const existing = insertResult.existingEntry;
+            try {
+                existing.time = copyTime;
+            } catch (_) {}
+
+            if (this.#deletedEntries.has(existing)) {
+                this.#deletedEntries.delete(existing);
+                this._undoStack = this._undoStack.filter(e => e !== existing);
+                this._updateUndoButton();
+            }
+
+            const existingIdx = this.#history.indexOf(existing);
+            if (existingIdx !== 0) {
+                if (existingIdx > 0) {
+                    this.#history.splice(existingIdx, 1);
+                }
+                this.#history.unshift(existing);
+            }
+        } else {
+            this.#history.unshift(insertResult.newEntry);
+            this._enforceLimit();
+        }
+
+        if (this._popup) {
+            this._closeContextMenu();
+            this._closePopup();
+        }
+    }
+
     _deleteEntry(indexOrEntry) {
         if (!this._popup) {
             // 弹窗未打开时（无交互界面 / 单元测试场景），直接物理删除
@@ -2054,8 +2235,12 @@ export default class RawClipboardExtension extends Extension {
                 track_hover: true,
             });
 
-            // 阻断弹窗内部的点击事件冒泡，若处于搜索状态，点击弹窗空白区域优先退出搜索状态
+            // 阻断弹窗内部的点击事件冒泡，若有右键菜单优先关闭右键菜单，若处于搜索状态，点击弹窗空白区域优先退出搜索状态
             this._popup.connect('button-press-event', () => {
+                if (this._contextMenu) {
+                    this._closeContextMenu();
+                    return Clutter.EVENT_STOP;
+                }
                 if (this._inSearchMode) {
                     this._exitSearchMode();
                 }
@@ -2108,6 +2293,9 @@ export default class RawClipboardExtension extends Extension {
                 });
                 btn._labelActor = btnLabel;
                 btn.connect('button-press-event', (_actor, event) => {
+                    if (this._contextMenu) {
+                        this._closeContextMenu();
+                    }
                     if (event.get_button() === 1) {
                         this._setSortMode(opt.id);
                         return Clutter.EVENT_STOP;
@@ -2116,6 +2304,9 @@ export default class RawClipboardExtension extends Extension {
                 });
                 btn.connect('button-release-event', () => Clutter.EVENT_STOP);
                 btn.connect('clicked', () => {
+                    if (this._contextMenu) {
+                        this._closeContextMenu();
+                    }
                     this._setSortMode(opt.id);
                 });
                 this._sortButtons.set(opt.id, btn);
@@ -2135,6 +2326,10 @@ export default class RawClipboardExtension extends Extension {
                 visible: false,
             });
             this._searchBar.connect('button-press-event', () => {
+                if (this._contextMenu) {
+                    this._closeContextMenu();
+                    return Clutter.EVENT_STOP;
+                }
                 if (this._inSearchMode) {
                     this._exitSearchMode();
                 }
@@ -2177,6 +2372,10 @@ export default class RawClipboardExtension extends Extension {
                 y_align: Clutter.ActorAlign.START,
             });
             this._listContainer.connect('button-press-event', () => {
+                if (this._contextMenu) {
+                    this._closeContextMenu();
+                    return Clutter.EVENT_STOP;
+                }
                 if (this._inSearchMode) {
                     this._exitSearchMode();
                 }
@@ -2195,6 +2394,10 @@ export default class RawClipboardExtension extends Extension {
                 y_align: Clutter.ActorAlign.CENTER,
             });
             this._pageBar.connect('button-press-event', () => {
+                if (this._contextMenu) {
+                    this._closeContextMenu();
+                    return Clutter.EVENT_STOP;
+                }
                 if (this._inSearchMode) {
                     this._exitSearchMode();
                 }
@@ -2236,9 +2439,15 @@ export default class RawClipboardExtension extends Extension {
             });
 
             this._undoBtn.connect('clicked', () => {
+                if (this._contextMenu) {
+                    this._closeContextMenu();
+                }
                 this._undoLastDelete();
             });
             this._undoBtn.connect('button-press-event', (_actor, event) => {
+                if (this._contextMenu) {
+                    this._closeContextMenu();
+                }
                 if (event.get_button() === 1 && this._undoBtn.reactive) {
                     this._undoLastDelete();
                     return Clutter.EVENT_STOP;
@@ -2334,6 +2543,9 @@ export default class RawClipboardExtension extends Extension {
             const SCROLL_DEBOUNCE_MS = 60; // 60ms 极速防抖：过滤瞬间机械抖动，同时确保连续滚轮与方向键一致的瞬时响应
 
             const handleScrollEvent = (_actor, event) => {
+                if (this._contextMenu) {
+                    this._closeContextMenu();
+                }
                 const currentEntries = this._getSortedEntries();
                 const totalPages = Math.max(1, Math.ceil(currentEntries.length / 8));
                 if (totalPages <= 1) return Clutter.EVENT_STOP;
@@ -2413,6 +2625,10 @@ export default class RawClipboardExtension extends Extension {
             // 4. 点击空白处关闭弹窗：用户点击全屏遮罩任何非弹窗区域即刻触发关闭
             // 若处于搜索状态，优先退出搜索状态而不关闭弹窗
             this._container.connect('button-press-event', (_actor, _event) => {
+                if (this._contextMenu) {
+                    this._closeContextMenu();
+                    return Clutter.EVENT_STOP;
+                }
                 if (this._inSearchMode) {
                     this._exitSearchMode();
                     return Clutter.EVENT_STOP;
@@ -2486,8 +2702,156 @@ export default class RawClipboardExtension extends Extension {
         }
     }
 
+    _openContextMenu(entry, x, y) {
+        this._closeContextMenu();
+        if (!entry || !this._container) return;
+
+        const isEn = this._getLanguage() === 'en-US';
+        const isNonTextPreviewable = this._isTextPreviewable(entry) && entry.type !== 'text';
+
+        const menu = new St.BoxLayout({
+            name: 'rawClipboardContextMenu',
+            style_class: 'raw-clipboard-context-menu',
+            orientation: Clutter.Orientation.VERTICAL,
+            reactive: true,
+        });
+
+        menu.connect('button-press-event', () => Clutter.EVENT_STOP);
+        menu.connect('button-release-event', () => Clutter.EVENT_STOP);
+
+        // 1. 带入搜索 (Search Preview)
+        const searchBox = new St.BoxLayout({
+            orientation: Clutter.Orientation.HORIZONTAL,
+            y_align: Clutter.ActorAlign.CENTER,
+            x_expand: true,
+        });
+        const searchIcon = new St.Icon({
+            icon_name: 'system-search-symbolic',
+            style_class: 'raw-clipboard-menu-item-icon',
+            icon_size: 16,
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        const searchLabel = new St.Label({
+            text: isEn ? 'Search Preview' : '带入搜索',
+            style_class: 'raw-clipboard-menu-item-label',
+            y_align: Clutter.ActorAlign.CENTER,
+        });
+        if (searchLabel.clutter_text) searchLabel.clutter_text.use_markup = false;
+        searchBox.add_child(searchIcon);
+        searchBox.add_child(searchLabel);
+
+        const searchBtn = new St.Button({
+            style_class: 'raw-clipboard-menu-item',
+            can_focus: true,
+            reactive: true,
+            track_hover: true,
+            child: searchBox,
+            x_expand: true,
+        });
+        let searchHandled = false;
+        const doSearch = () => {
+            if (searchHandled) return;
+            searchHandled = true;
+            const preview = (entry.preview || '').slice(0, MAX_SEARCH_IMPORT_LEN);
+            this._closeContextMenu();
+            this._enterSearchMode(preview);
+        };
+        searchBtn.connect('clicked', doSearch);
+        searchBtn.connect('button-press-event', (_actor, event) => {
+            if (event.get_button() === 1) {
+                doSearch();
+                return Clutter.EVENT_STOP;
+            }
+            return Clutter.EVENT_STOP;
+        });
+        menu.add_child(searchBtn);
+
+        // 2. 复制文本 (Copy Text) - 仅对非文本类型但以文本形式预览的项目提供
+        if (isNonTextPreviewable) {
+            const copyBox = new St.BoxLayout({
+                orientation: Clutter.Orientation.HORIZONTAL,
+                y_align: Clutter.ActorAlign.CENTER,
+                x_expand: true,
+            });
+            const copyIcon = new St.Icon({
+                icon_name: 'edit-copy-symbolic',
+                style_class: 'raw-clipboard-menu-item-icon',
+                icon_size: 16,
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            const copyLabel = new St.Label({
+                text: isEn ? 'Copy Text' : '复制文本',
+                style_class: 'raw-clipboard-menu-item-label',
+                y_align: Clutter.ActorAlign.CENTER,
+            });
+            if (copyLabel.clutter_text) copyLabel.clutter_text.use_markup = false;
+            copyBox.add_child(copyIcon);
+            copyBox.add_child(copyLabel);
+
+            const copyBtn = new St.Button({
+                style_class: 'raw-clipboard-menu-item',
+                can_focus: true,
+                reactive: true,
+                track_hover: true,
+                child: copyBox,
+                x_expand: true,
+            });
+            let copyHandled = false;
+            const doCopy = () => {
+                if (copyHandled) return;
+                copyHandled = true;
+                this._copyTextFromEntry(entry);
+            };
+            copyBtn.connect('clicked', doCopy);
+            copyBtn.connect('button-press-event', (_actor, event) => {
+                if (event.get_button() === 1) {
+                    doCopy();
+                    return Clutter.EVENT_STOP;
+                }
+                return Clutter.EVENT_STOP;
+            });
+            menu.add_child(copyBtn);
+        }
+
+        this._contextMenu = menu;
+        this._container.add_child(menu);
+
+        // 定位与屏幕边缘保护
+        const monitor = Main.layoutManager.primaryMonitor || { x: 0, y: 0, width: global.stage.width, height: global.stage.height };
+        const menuWidth = 140;
+        const menuHeight = isNonTextPreviewable ? 72 : 38;
+        let posX = (typeof x === 'number' && !isNaN(x)) ? x : 0;
+        let posY = (typeof y === 'number' && !isNaN(y)) ? y : 0;
+
+        if (posX + menuWidth > monitor.x + monitor.width - 8) {
+            posX = posX - menuWidth;
+        }
+        if (posY + menuHeight > monitor.y + monitor.height - 8) {
+            posY = posY - menuHeight;
+        }
+        posX = Math.max(monitor.x + 8, Math.min(monitor.x + monitor.width - menuWidth - 8, posX));
+        posY = Math.max(monitor.y + 8, Math.min(monitor.y + monitor.height - menuHeight - 8, posY));
+
+        menu.set_position(posX, posY);
+    }
+
+    _closeContextMenu() {
+        if (!this._contextMenu) return;
+        try {
+            const parent = this._contextMenu.get_parent ? this._contextMenu.get_parent() : this._contextMenu.parent;
+            if (parent && typeof parent.remove_child === 'function') {
+                parent.remove_child(this._contextMenu);
+            }
+            if (typeof this._contextMenu.destroy === 'function') {
+                this._contextMenu.destroy();
+            }
+        } catch (_) {}
+        this._contextMenu = null;
+    }
+
     _closePopup() {
         if (!this._container || this._isClosing) return;
+        this._closeContextMenu();
         this._isClosing = true;
         this._debug('[RawClipboard] 关闭剪贴板窗口');
 
@@ -2590,14 +2954,13 @@ export default class RawClipboardExtension extends Extension {
         itemBox.min_height = 48;
         itemBox.max_height = 48;
 
-        // 图标 / 缩略图 (支持悬停变搜索放大镜、点击将条目预览内容带入搜索框并覆盖)
+        // 图标 / 缩略图
         const iconActor = new St.Icon({
             icon_name: 'edit-copy-symbolic',
             style_class: 'raw-clipboard-item-icon',
             icon_size: 20,
             y_align: Clutter.ActorAlign.CENTER,
-            reactive: true,
-            track_hover: true,
+            reactive: false,
         });
         itemBox.add_child(iconActor);
 
@@ -2672,24 +3035,12 @@ export default class RawClipboardExtension extends Extension {
             currentEntry: null,
             currentGIcon: null,
             currentIconName: null,
-            _isHoverSearch: false,
         };
 
-        // 图标悬停显示搜索放大镜，点击将预览内容带入搜索框并覆盖
-        iconActor.connect('notify::hover', () => {
-            this._applySlotIcon(slot);
-        });
-        iconActor.connect('button-press-event', (_actor, event) => {
-            if (event.get_button() === 1 && slot.currentEntry) {
-                const preview = (slot.currentEntry.preview || '').slice(0, MAX_SEARCH_IMPORT_LEN);
-                this._enterSearchMode(preview);
-                return Clutter.EVENT_STOP;
-            }
-            return Clutter.EVENT_STOP;
-        });
-        iconActor.connect('button-release-event', () => Clutter.EVENT_STOP);
-
         deleteBtn.connect('button-press-event', (_actor, event) => {
+            if (this._contextMenu) {
+                this._closeContextMenu();
+            }
             if (event.get_button() === 1 && slot.currentEntry) {
                 this._deleteEntry(slot.currentEntry);
             }
@@ -2697,21 +3048,41 @@ export default class RawClipboardExtension extends Extension {
         });
         deleteBtn.connect('button-release-event', () => Clutter.EVENT_STOP);
         deleteBtn.connect('clicked', () => {
+            if (this._contextMenu) {
+                this._closeContextMenu();
+            }
             if (slot.currentEntry) {
                 this._deleteEntry(slot.currentEntry);
             }
         });
         itemBox.add_child(deleteBtn);
 
-        // 点击条目恢复 (删除按钮自身已消费事件并停止冒泡，抵达此处的事件必然是条目正文点击)
+        // 点击条目交互：左键恢复，右键弹出上下文操作菜单
         itemBox.connect('button-press-event', (_actor, event) => {
-            if (event.get_button() === 1 && slot.currentEntry) {
+            const button = event.get_button();
+            if (button === 1 && slot.currentEntry) {
+                if (this._contextMenu) {
+                    this._closeContextMenu();
+                    return Clutter.EVENT_STOP;
+                }
                 try {
                     this._restoreEntry(slot.currentEntry);
                     this._closePopup();
                 } catch (e) {
                     this._error('[RawClipboard] Restore on click failed:', e);
                 }
+                return Clutter.EVENT_STOP;
+            } else if (button === 3 && slot.currentEntry) {
+                this._setSelectedIndex(slotIndex);
+                let coords = null;
+                if (typeof event.get_coords === 'function') {
+                    coords = event.get_coords();
+                }
+                if (!coords || !Array.isArray(coords)) {
+                    coords = global.get_pointer ? global.get_pointer() : [0, 0];
+                }
+                const [x, y] = coords;
+                this._openContextMenu(slot.currentEntry, x, y);
                 return Clutter.EVENT_STOP;
             }
             return Clutter.EVENT_PROPAGATE;
@@ -2731,20 +3102,8 @@ export default class RawClipboardExtension extends Extension {
         const entry = slot.currentEntry;
         if (!entry) return;
 
-        if (slot.iconActor.hover) {
-            slot._isHoverSearch = true;
-            slot.iconActor.gicon = null;
-            slot.iconActor.icon_name = 'system-search-symbolic';
-            slot.iconActor.style_class = 'raw-clipboard-item-icon';
-            slot.iconActor.icon_size = 20;
-            return;
-        }
-
-        const wasHoverSearch = Boolean(slot._isHoverSearch);
-        slot._isHoverSearch = false;
-
         if (entry.thumbIcon) {
-            if (slot.currentGIcon !== entry.thumbIcon || wasHoverSearch) {
+            if (slot.currentGIcon !== entry.thumbIcon) {
                 slot.iconActor.icon_name = null;
                 slot.iconActor.gicon = entry.thumbIcon;
                 slot.iconActor.style_class = 'raw-clipboard-item-thumb';
@@ -2754,7 +3113,7 @@ export default class RawClipboardExtension extends Extension {
             }
         } else {
             const iconName = entry.icon || 'edit-copy-symbolic';
-            if (slot.currentIconName !== iconName || slot.currentGIcon !== null || wasHoverSearch) {
+            if (slot.currentIconName !== iconName || slot.currentGIcon !== null) {
                 slot.iconActor.gicon = null;
                 slot.iconActor.icon_name = iconName;
                 slot.iconActor.style_class = 'raw-clipboard-item-icon';
@@ -2787,7 +3146,6 @@ export default class RawClipboardExtension extends Extension {
             // 隐藏所有槽位
             for (const slot of this._itemSlots) {
                 slot.currentEntry = null;
-                slot._isHoverSearch = false;
                 slot.itemBox.hide();
             }
 
@@ -2872,7 +3230,6 @@ export default class RawClipboardExtension extends Extension {
         // 隐藏多余的槽位 (若当前页不满 8 条)
         for (let i = pageItems.length; i < this._itemSlots.length; i++) {
             this._itemSlots[i].currentEntry = null;
-            this._itemSlots[i]._isHoverSearch = false;
             this._itemSlots[i].itemBox.hide();
         }
 
@@ -2900,14 +3257,22 @@ export default class RawClipboardExtension extends Extension {
     _onKeyPress(event) {
         const symbol = event.get_key_symbol();
 
-        // Esc: 若在搜索模式，先退出搜索状态回到完整列表；否则关闭弹窗
+        // Esc: 若有右键菜单，先关闭右键菜单；若在搜索模式，先退出搜索状态回到完整列表；否则关闭弹窗
         if (symbol === Clutter.KEY_Escape) {
+            if (this._contextMenu) {
+                this._closeContextMenu();
+                return Clutter.EVENT_STOP;
+            }
             if (this._inSearchMode) {
                 this._exitSearchMode();
                 return Clutter.EVENT_STOP;
             }
             this._closePopup();
             return Clutter.EVENT_STOP;
+        }
+
+        if (this._contextMenu) {
+            this._closeContextMenu();
         }
 
         const state = typeof event.get_state === 'function' ? event.get_state() : 0;
