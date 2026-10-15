@@ -62,8 +62,15 @@ function shouldUseMotion() {
     return true;
 }
 
-// 格式化记录复制时间 (当天显示 HH:mm:ss，跨天显示 n天前 HH:mm)
-export function formatTime(timestamp) {
+// 格式化数据容量大小 (B / KB / MB)
+export function formatByteSize(size) {
+    if (typeof size !== 'number' || size < 0) return '0 B';
+    return size > 1048576 ? `${(size / 1048576).toFixed(1)} MB` :
+           size > 1024 ? `${(size / 1024).toFixed(1)} KB` : `${size} B`;
+}
+
+// 格式化记录复制时间 (当天显示 HH:mm:ss，跨天显示 n天前 HH:mm / nd ago HH:mm)
+export function formatTime(timestamp, lang = 'zh-CN') {
     if (!timestamp || typeof timestamp !== 'number') return '';
     const d = new Date(timestamp);
     if (isNaN(d.getTime())) return '';
@@ -76,7 +83,8 @@ export function formatTime(timestamp) {
     if (diffDays === 0) {
         return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
     }
-    return `${diffDays}天前 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    const isEn = lang === 'en-US';
+    return isEn ? `${diffDays}d ago ${pad(d.getHours())}:${pad(d.getMinutes())}` : `${diffDays}天前 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
 // 提取键盘按键对应的可输入字符 (过滤控制键与修饰键)
@@ -157,10 +165,10 @@ function detectCoreMime(mimeTypes) {
 // 3. 我们只维护有限的类型预览（文本、富文本、文件列表、位图）；
 // 4. 其他未知类型只显示类型本身（mime），不显示预览；
 // 5. 且只有位图能以缩略图形式预览。
-function generatePreview(type, mime, gBytes, unknownTypeName = null) {
+function generatePreview(type, mime, gBytes, unknownTypeName = null, lang = 'zh-CN') {
     const size = gBytes.get_size();
-    const sizeStr = size > 1048576 ? `${(size / 1048576).toFixed(1)} MB` :
-                    size > 1024 ? `${(size / 1024).toFixed(1)} KB` : `${size} B`;
+    const sizeStr = formatByteSize(size);
+    const isEn = lang === 'en-US';
 
     // 1. 文本类 (纯文本、富文本 HTML 等)：通过 Gio.MemoryInputStream 零拷贝流按需读取
     // 准则：只要能以文本形式显示，就提取前缀文本作为预览；若全是控制字符/乱码无法以文本形式显示，则只显示类型本身
@@ -182,8 +190,8 @@ function generatePreview(type, mime, gBytes, unknownTypeName = null) {
 
             // 能以文本形式显示：展示前 1000 字符预览（全空白文本安全显示为 (空文本)）
             return {
-                title: clean.length > 1000 ? `${clean.slice(0, 1000)}…` : (clean || '(空文本)'),
-                subtitle: `${type === 'html' ? '富文本' : '文本'} · ${sizeStr}`,
+                title: clean.length > 1000 ? `${clean.slice(0, 1000)}…` : (clean || (isEn ? '(Empty text)' : '(空文本)')),
+                subtitle: `${type === 'html' ? (isEn ? 'HTML' : '富文本') : (isEn ? 'Text' : '文本')} · ${sizeStr}`,
                 icon: type === 'html' ? 'text-html-symbolic' : 'edit-copy-symbolic',
             };
         } catch (_e) {
@@ -209,8 +217,8 @@ function generatePreview(type, mime, gBytes, unknownTypeName = null) {
             // 若无任何有效路径，优雅标识空文件列表
             if (lines.length === 0) {
                 return {
-                    title: '文件列表',
-                    subtitle: '文件 · 0 项 (仅存路径，不读内容)',
+                    title: isEn ? 'File List' : '文件列表',
+                    subtitle: isEn ? 'Files · 0 items (path only, no disk read)' : '文件 · 0 项 (仅存路径，不读内容)',
                     icon: 'text-x-generic-symbolic',
                 };
             }
@@ -278,9 +286,9 @@ function generatePreview(type, mime, gBytes, unknownTypeName = null) {
             const isAllDir = dirCount === totalCount;
             const isMixed = dirCount > 0 && !isAllDir;
             const icon = dirCount > 0 ? 'folder-symbolic' : 'text-x-generic-symbolic';
-            const label = isAllDir ? '文件夹' : (isMixed ? '文件/目录' : '文件');
+            const label = isAllDir ? (isEn ? 'Folders' : '文件夹') : (isMixed ? (isEn ? 'Files/Folders' : '文件/目录') : (isEn ? 'Files' : '文件'));
             const countStr = isCapped ? `${totalCount}+` : `${totalCount}`;
-            const suffix = isAllDir ? `等 ${countStr} 个文件夹` : (isMixed ? `等 ${countStr} 项` : `等 ${countStr} 个文件`);
+            const suffix = isAllDir ? (isEn ? `and ${countStr} folders` : `等 ${countStr} 个文件夹`) : (isMixed ? (isEn ? `and ${countStr} items` : `等 ${countStr} 项`) : (isEn ? `and ${countStr} files` : `等 ${countStr} 个文件`));
 
             const title = totalCount === 1 ? name1 :
                           totalCount === 2 ? `${name1}, ${name2}` :
@@ -288,13 +296,13 @@ function generatePreview(type, mime, gBytes, unknownTypeName = null) {
 
             return {
                 title,
-                subtitle: `${label} · ${countStr} 项 (仅存路径，不读内容)`,
+                subtitle: isEn ? `${label} · ${countStr} items (path only, no disk read)` : `${label} · ${countStr} 项 (仅存路径，不读内容)`,
                 icon,
             };
         } catch (_e) {
             // 异常兜底：严格按照自身类型显示，绝不串味成 folder 图标
             return {
-                title: `文件列表 (${sizeStr})`,
+                title: isEn ? `File List (${sizeStr})` : `文件列表 (${sizeStr})`,
                 subtitle: mime,
                 icon: 'text-x-generic-symbolic',
             };
@@ -304,7 +312,7 @@ function generatePreview(type, mime, gBytes, unknownTypeName = null) {
     // 3. 位图类 (严格仅限位图格式：不能以文本形式显示，不显示文本预览；且只有位图能以缩略图形式预览)
     if (type === 'image') {
         return {
-            title: `图片 (${sizeStr})`,
+            title: isEn ? `Image (${sizeStr})` : `图片 (${sizeStr})`,
             subtitle: mime,
             icon: 'image-x-generic-symbolic',
         };
@@ -312,7 +320,7 @@ function generatePreview(type, mime, gBytes, unknownTypeName = null) {
 
     // 4. 其余未知类型：严格不解析预览内容，仅显示未知类型编号与数据大小
     return {
-        title: unknownTypeName || '未知类型',
+        title: unknownTypeName || (isEn ? 'Unknown Type' : '未知类型'),
         subtitle: sizeStr,
         icon: 'application-x-generic-symbolic',
     };
@@ -586,13 +594,137 @@ export default class RawClipboardExtension extends Extension {
         return entry.type === 'text' || entry.type === 'html' || entry.type === 'files';
     }
 
+    _getLanguage() {
+        try {
+            if (this._settings && this._settings.settings_schema && this._settings.settings_schema.has_key('ui-language')) {
+                return this._settings.get_string('ui-language') || 'zh-CN';
+            }
+        } catch (_) {}
+        return 'zh-CN';
+    }
+
+    _formatTime(timestamp) {
+        return formatTime(timestamp, this._getLanguage());
+    }
+
+    _getSearchPlaceholder() {
+        return this._getLanguage() === 'en-US' ? 'Search previews...' : '搜索预览内容...';
+    }
+
+    _getEmptyText() {
+        const isEn = this._getLanguage() === 'en-US';
+        return this._inSearchMode ?
+            (isEn ? 'No matching items' : '无匹配项目') :
+            (isEn ? 'Clipboard history is empty' : '剪贴板历史为空');
+    }
+
+    _getEntrySubtitle(entry) {
+        if (!entry) return '';
+        const isEn = this._getLanguage() === 'en-US';
+        if (!entry.type || entry.type === 'text' || entry.type === 'html') {
+            const sizeStr = formatByteSize(entry.size);
+            const typeStr = entry.type === 'html' ? (isEn ? 'HTML' : '富文本') : (isEn ? 'Text' : '文本');
+            return `${typeStr} · ${sizeStr}`;
+        }
+        if (entry.type === 'image') {
+            return entry.mime || '';
+        }
+        if (entry.type === 'files') {
+            if (isEn) {
+                return (entry.subtitle || '')
+                    .replace('文件夹', 'Folders')
+                    .replace('文件/目录', 'Files/Folders')
+                    .replace('文件', 'Files')
+                    .replace('项 (仅存路径，不读内容)', 'items (path only, no disk read)');
+            }
+            return (entry.subtitle || '')
+                .replace('Folders', '文件夹')
+                .replace('Files/Folders', '文件/目录')
+                .replace('Files', '文件')
+                .replace('items (path only, no disk read)', '项 (仅存路径，不读内容)');
+        }
+        if (entry.type === 'unknown' || entry.type === 'raw') {
+            return formatByteSize(entry.size);
+        }
+        return entry.subtitle || '';
+    }
+
+    _getEntryPreview(entry) {
+        if (!entry) return '';
+        const isEn = this._getLanguage() === 'en-US';
+        if (entry.type === 'image') {
+            return isEn ? `Image (${formatByteSize(entry.size)})` : `图片 (${formatByteSize(entry.size)})`;
+        }
+        if (entry.type === 'files') {
+            if (isEn) {
+                if (entry.preview === '文件列表') return 'File List';
+                if (entry.preview && entry.preview.startsWith('文件列表 (')) {
+                    return `File List (${formatByteSize(entry.size)})`;
+                }
+                return (entry.preview || '')
+                    .replace(/等\s*(\d+\+?)\s*个文件夹/, 'and $1 folders')
+                    .replace(/等\s*(\d+\+?)\s*项/, 'and $1 items')
+                    .replace(/等\s*(\d+\+?)\s*个文件/, 'and $1 files');
+            }
+            if (entry.preview === 'File List') return '文件列表';
+            if (entry.preview && entry.preview.startsWith('File List (')) {
+                return `文件列表 (${formatByteSize(entry.size)})`;
+            }
+            return (entry.preview || '')
+                .replace(/and\s*(\d+\+?)\s*folders/, '等 $1 个文件夹')
+                .replace(/and\s*(\d+\+?)\s*items/, '等 $1 项')
+                .replace(/and\s*(\d+\+?)\s*files/, '等 $1 个文件');
+        }
+        if (entry.type === 'unknown' || entry.type === 'raw') {
+            if (isEn && entry.preview && entry.preview.startsWith('未知类型')) {
+                return entry.preview.replace('未知类型', 'Unknown Type ');
+            }
+            if (!isEn && entry.preview && entry.preview.startsWith('Unknown Type')) {
+                return entry.preview.replace(/Unknown Type\s*/, '未知类型');
+            }
+            return entry.preview || '';
+        }
+        if (isEn && entry.preview === '(空文本)') {
+            return '(Empty text)';
+        }
+        if (!isEn && entry.preview === '(Empty text)') {
+            return '(空文本)';
+        }
+        return entry.preview || '';
+    }
+
+    _applyLanguage() {
+        const isEn = this._getLanguage() === 'en-US';
+        if (this._sortButtons) {
+            const labels = {
+                queue: isEn ? 'Order' : '记录顺序',
+                size: isEn ? 'Size' : '大小',
+                type: isEn ? 'Type' : '类型',
+                initial: isEn ? 'A-Z' : '首字母',
+            };
+            for (const [id, btn] of this._sortButtons) {
+                if (btn._labelActor) {
+                    btn._labelActor.text = labels[id] || id;
+                }
+            }
+        }
+        if (this._searchEntry && (!this._searchQuery || this._searchQuery.length === 0)) {
+            this._searchEntry.set_text(this._getSearchPlaceholder());
+        }
+        if (this._undoLabel) {
+            this._undoLabel.text = isEn ? 'Undo' : '撤销';
+        }
+        this._updatePageBadge();
+        this._renderPage();
+    }
+
     _updateSearchDisplay() {
         if (!this._searchEntry) return;
         if (this._searchQuery && this._searchQuery.length > 0) {
             this._searchEntry.set_text(this._searchQuery);
             this._searchEntry.remove_style_class_name('hint');
         } else {
-            this._searchEntry.set_text('搜索预览内容...');
+            this._searchEntry.set_text(this._getSearchPlaceholder());
             this._searchEntry.add_style_class_name('hint');
         }
     }
@@ -652,7 +784,8 @@ export default class RawClipboardExtension extends Extension {
             return visible.filter(entry => {
                 if (!this._isTextPreviewable(entry)) return false;
                 const preview = (entry.preview || '').toLowerCase();
-                return preview.includes(query);
+                const displayPreview = this._getEntryPreview(entry).toLowerCase();
+                return preview.includes(query) || displayPreview.includes(query);
             });
         }
 
@@ -832,7 +965,8 @@ export default class RawClipboardExtension extends Extension {
         const key = mime || 'unknown';
         if (!this.#unknownTypes.has(key)) {
             const nextIdx = this.#unknownTypes.size + 1;
-            this.#unknownTypes.set(key, `未知类型${nextIdx}`);
+            const isEn = this._getLanguage() === 'en-US';
+            this.#unknownTypes.set(key, isEn ? `Unknown Type ${nextIdx}` : `未知类型${nextIdx}`);
         }
         return this.#unknownTypes.get(key);
     }
@@ -883,6 +1017,8 @@ export default class RawClipboardExtension extends Extension {
         this._maxSizeChangedId = -1;
         this._totalSizeChangedId = -1;
         this._shortcutChangedId = -1;
+        this._langChangedId = -1;
+        this._undoLabel = null;
 
         // 监听系统剪贴板变化
         this._selection = global.display.get_selection();
@@ -911,6 +1047,16 @@ export default class RawClipboardExtension extends Extension {
         this._shortcutChangedId = this._settings.connect(
             'changed::toggle-shortcut',
             this._bindShortcut.bind(this)
+        );
+
+        // 监听界面语言修改事件，弹窗在位实时切换语言
+        this._langChangedId = this._settings.connect(
+            'changed::ui-language',
+            () => {
+                if (this._container) {
+                    this._applyLanguage();
+                }
+            }
         );
 
         // 监听系统锁屏状态：锁屏时若弹窗处于打开状态则安全关闭，避免焦点争抢
@@ -973,6 +1119,11 @@ export default class RawClipboardExtension extends Extension {
         if (this._shortcutChangedId >= 0) {
             this._settings.disconnect(this._shortcutChangedId);
             this._shortcutChangedId = -1;
+        }
+
+        if (this._langChangedId >= 0) {
+            this._settings.disconnect(this._langChangedId);
+            this._langChangedId = -1;
         }
 
         if (this._sessionUpdatedId && Main.sessionMode) {
@@ -1412,7 +1563,7 @@ export default class RawClipboardExtension extends Extension {
             this._debug(`[RawClipboard] 将数据投递至存储查重内核 (MIME: ${core.mime}, 大小: ${size} 字节)...`);
             const unknownLabel = (core.type === 'raw') ? this._getUnknownTypeName(core.mime) : null;
             const insertResult = this.#radixTree.insert(core.mime, gBytes, leafNode => {
-                const previewInfo = generatePreview(core.type, core.mime, gBytes, unknownLabel);
+                const previewInfo = generatePreview(core.type, core.mime, gBytes, unknownLabel, this._getLanguage());
                 let cachedThumb = undefined;
                 let assembledBytes = (leafNode.collectPathSegments().length === 1 ? leafNode.bytes : null);
                 let cachedChecksum = null;
@@ -1838,7 +1989,9 @@ export default class RawClipboardExtension extends Extension {
             this._pageBadge.text = '';
             this._loopArmDirection = null;
         } else if (this._loopArmDirection) {
-            this._pageBadge.text = `循环？ ${this._currentPage + 1} / ${totalPages}`;
+            const isEn = this._getLanguage() === 'en-US';
+            const loopPrompt = isEn ? 'Loop? ' : '循环？ ';
+            this._pageBadge.text = `${loopPrompt}${this._currentPage + 1} / ${totalPages}`;
             this._pageBadge.show();
         } else {
             this._pageBadge.text = `${this._currentPage + 1} / ${totalPages}`;
@@ -1924,12 +2077,13 @@ export default class RawClipboardExtension extends Extension {
                 y_align: Clutter.ActorAlign.CENTER,
             });
 
+            const isEn = this._getLanguage() === 'en-US';
             this._sortButtons = new Map();
             const sortOptions = [
-                { id: 'queue', label: '记录顺序' },
-                { id: 'size', label: '大小' },
-                { id: 'type', label: '类型' },
-                { id: 'initial', label: '首字母' },
+                { id: 'queue', label: isEn ? 'Order' : '记录顺序' },
+                { id: 'size', label: isEn ? 'Size' : '大小' },
+                { id: 'type', label: isEn ? 'Type' : '类型' },
+                { id: 'initial', label: isEn ? 'A-Z' : '首字母' },
             ];
 
             sortOptions.forEach(opt => {
@@ -1952,6 +2106,7 @@ export default class RawClipboardExtension extends Extension {
                     y_align: Clutter.ActorAlign.CENTER,
                     child: btnLabel,
                 });
+                btn._labelActor = btnLabel;
                 btn.connect('button-press-event', (_actor, event) => {
                     if (event.get_button() === 1) {
                         this._setSortMode(opt.id);
@@ -1997,7 +2152,7 @@ export default class RawClipboardExtension extends Extension {
             // 搜索显示标签：纯键盘直接响应无光标，彻底禁用输入法，根除输入法弹窗遮挡与首字母遗漏
             this._searchEntry = new St.Label({
                 style_class: 'raw-clipboard-search-entry hint',
-                text: '搜索预览内容...',
+                text: this._getSearchPlaceholder(),
                 reactive: false,
                 can_focus: false,
                 x_expand: true,
@@ -2053,13 +2208,14 @@ export default class RawClipboardExtension extends Extension {
                 y_align: Clutter.ActorAlign.CENTER,
             });
             const undoLabel = new St.Label({
-                text: '撤销',
+                text: isEn ? 'Undo' : '撤销',
                 style_class: 'raw-clipboard-undo-label',
                 y_align: Clutter.ActorAlign.CENTER,
             });
             if (undoLabel.clutter_text) {
                 undoLabel.clutter_text.use_markup = false;
             }
+            this._undoLabel = undoLabel;
 
             const undoBox = new St.BoxLayout({
                 style_class: 'raw-clipboard-undo-box',
@@ -2316,6 +2472,7 @@ export default class RawClipboardExtension extends Extension {
                 this._pageBar = null;
                 this._pageBadge = null;
                 this._undoBtn = null;
+                this._undoLabel = null;
                 this._itemSlots = null;
                 this._itemActors = null;
                 this._sortMode = 'queue';
@@ -2370,6 +2527,7 @@ export default class RawClipboardExtension extends Extension {
                 this._pageBar = null;
                 this._pageBadge = null;
                 this._undoBtn = null;
+                this._undoLabel = null;
                 this._itemSlots = null;
                 this._itemActors = null; // 切断 UI 控件对 entry 的闭包持有，允许 GC 即时回收
                 this._sortMode = 'queue';
@@ -2635,7 +2793,7 @@ export default class RawClipboardExtension extends Extension {
 
             if (!this._emptyLabel) {
                 this._emptyLabel = new St.Label({
-                    text: this._inSearchMode ? '无匹配项目' : '剪贴板历史为空',
+                    text: this._getEmptyText(),
                     style_class: 'raw-clipboard-empty',
                     reactive: true,
                     x_expand: true,
@@ -2654,7 +2812,7 @@ export default class RawClipboardExtension extends Extension {
                 });
                 this._listContainer.add_child(this._emptyLabel);
             }
-            this._emptyLabel.text = this._inSearchMode ? '无匹配项目' : '剪贴板历史为空';
+            this._emptyLabel.text = this._getEmptyText();
             this._emptyLabel.show();
             return;
         }
@@ -2688,13 +2846,15 @@ export default class RawClipboardExtension extends Extension {
             this._applySlotIcon(slot);
 
             // 2. 文字与时间在位更新
-            if (slot.previewLabel.text !== entry.preview) {
-                slot.previewLabel.text = entry.preview || '';
+            const previewText = this._getEntryPreview(entry);
+            if (slot.previewLabel.text !== previewText) {
+                slot.previewLabel.text = previewText;
             }
-            if (slot.subLabel.text !== entry.subtitle) {
-                slot.subLabel.text = entry.subtitle || '';
+            const subtitleText = this._getEntrySubtitle(entry);
+            if (slot.subLabel.text !== subtitleText) {
+                slot.subLabel.text = subtitleText;
             }
-            const timeText = formatTime(entry.time);
+            const timeText = this._formatTime(entry.time);
             if (slot.timeLabel.text !== timeText) {
                 slot.timeLabel.text = timeText;
             }

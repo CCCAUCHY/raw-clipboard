@@ -3927,6 +3927,144 @@ await reporter.run('13.7 纯键盘直接响应与条目左侧图标悬停搜索/
 });
 
 // ============================================================================
+// [测试套件 14] 14. 多语言切换与独立不读取系统语言环境测试
+// ============================================================================
+reporter.suite('14. 多语言切换与独立不读取系统语言环境测试');
+
+await reporter.run('14.1 默认语言为中文 (zh-CN)，且绝对不读取系统 LANG/LC_ALL 环境变量', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 验证默认语言为 zh-CN
+    assert(ext._getLanguage() === 'zh-CN', '默认语言必须为 zh-CN');
+
+    // 即使修改系统环境变量 LANG 或 LC_ALL，扩展也绝不读取系统语言
+    GLib.setenv('LANG', 'en_US.UTF-8', true);
+    GLib.setenv('LC_ALL', 'en_US.UTF-8', true);
+    assert(ext._getLanguage() === 'zh-CN', '环境变量设为 en_US 时依然严格保持 zh-CN，绝不读取环境');
+
+    // 验证中文弹窗控件文本
+    ext._openPopup();
+    assert(ext._sortButtons.get('queue')._labelActor.text === '记录顺序', '排序按钮0为 记录顺序');
+    assert(ext._sortButtons.get('size')._labelActor.text === '大小', '排序按钮1为 大小');
+    assert(ext._sortButtons.get('type')._labelActor.text === '类型', '排序按钮2为 类型');
+    assert(ext._sortButtons.get('initial')._labelActor.text === '首字母', '排序按钮3为 首字母');
+    assert(ext._undoLabel.text === '撤销', '撤销按钮文本为 撤销');
+    assert(ext._getSearchPlaceholder() === '搜索预览内容...', '搜索占位符为 搜索预览内容...');
+    assert(ext._emptyLabel.text === '剪贴板历史为空', '空历史提示为 剪贴板历史为空');
+
+    ext._closePopup();
+    ext.disable();
+});
+
+await reporter.run('14.2 切换至英文 (en-US)，弹窗控件与状态文本全量本地化为英文', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 将设置切换至 en-US
+    const settings = ext._settings;
+    settings.set_string('ui-language', 'en-US');
+    assert(ext._getLanguage() === 'en-US', '配置生效为 en-US');
+
+    ext._openPopup();
+    assert(ext._sortButtons.get('queue')._labelActor.text === 'Order', '排序按钮0为 Order');
+    assert(ext._sortButtons.get('size')._labelActor.text === 'Size', '排序按钮1为 Size');
+    assert(ext._sortButtons.get('type')._labelActor.text === 'Type', '排序按钮2为 Type');
+    assert(ext._sortButtons.get('initial')._labelActor.text === 'A-Z', '排序按钮3为 A-Z');
+    assert(ext._undoLabel.text === 'Undo', '撤销按钮文本为 Undo');
+    assert(ext._getSearchPlaceholder() === 'Search previews...', '搜索占位符为 Search previews...');
+    assert(ext._emptyLabel.text === 'Clipboard history is empty', '空历史提示为 Clipboard history is empty');
+
+    // 搜索模式下的空匹配文本
+    ext._enterSearchMode('nomatchquery');
+    assert(ext._emptyLabel.text === 'No matching items', '搜索无匹配提示为 No matching items');
+    ext._exitSearchMode();
+
+    ext._closePopup();
+
+    // 还原配置
+    settings.set_string('ui-language', 'zh-CN');
+    ext.disable();
+});
+
+await reporter.run('14.3 历史条目动态多语言渲染与在位实时切换测试 (中英无缝即时切换)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 写入多种类型条目
+    const textSrc = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Hello World'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, textSrc);
+
+    const htmlSrc = new MockSelectionSource(['text/html'], new TextEncoder().encode('<b>Bold</b>'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, htmlSrc);
+
+    const imgSrc = new MockSelectionSource(['image/png'], new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, imgSrc);
+
+    const filesSrc = new MockSelectionSource(['text/uri-list'], new TextEncoder().encode('file:///home/user/doc.txt\n'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, filesSrc);
+
+    // 打开弹窗，当前在 zh-CN
+    ext._openPopup();
+    assert(ext._getLanguage() === 'zh-CN', '当前为中文');
+
+    // 检查中文副标题和标题
+    // items: [files, image, html, text] (按记录倒序/队首)
+    assert(ext._itemSlots[0].subLabel.text.includes('文件'), '条目0含中文 文件');
+    assert(ext._itemSlots[1].previewLabel.text.includes('图片'), '条目1含中文 图片');
+    assert(ext._itemSlots[2].subLabel.text.includes('富文本'), '条目2含中文 富文本');
+    assert(ext._itemSlots[3].subLabel.text.includes('文本'), '条目3含中文 文本');
+    assert(ext._sortButtons.get('queue')._labelActor.text === '记录顺序', '当前按钮为 记录顺序');
+
+    // 动态在位切换语言至 en-US (弹窗保持开启)
+    ext._settings.set_string('ui-language', 'en-US');
+    assert(ext._getLanguage() === 'en-US', '已切换至 en-US');
+
+    // 验证实时更新
+    assert(ext._sortButtons.get('queue')._labelActor.text === 'Order', '在位更新为 Order');
+    assert(ext._sortButtons.get('initial')._labelActor.text === 'A-Z', '在位更新为 A-Z');
+    assert(ext._undoLabel.text === 'Undo', '在位更新为 Undo');
+    assert(ext._itemSlots[0].subLabel.text.includes('Files'), '条目0副标题在位更新为 Files');
+    assert(ext._itemSlots[1].previewLabel.text.includes('Image'), '条目1标题在位更新为 Image');
+    assert(ext._itemSlots[2].subLabel.text.includes('HTML'), '条目2副标题在位更新为 HTML');
+    assert(ext._itemSlots[3].subLabel.text.includes('Text'), '条目3副标题在位更新为 Text');
+
+    // 动态在位切回 zh-CN
+    ext._settings.set_string('ui-language', 'zh-CN');
+    assert(ext._sortButtons.get('queue')._labelActor.text === '记录顺序', '切回 记录顺序');
+    assert(ext._itemSlots[0].subLabel.text.includes('文件'), '切回中文 文件');
+    assert(ext._undoLabel.text === '撤销', '切回 撤销');
+
+    ext._closePopup();
+    ext.disable();
+});
+
+await reporter.run('14.4 循环翻页提示多语言响应 (中文“循环？ ”与英文“Loop? ”)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    for (let i = 1; i <= 10; i++) {
+        const src = new MockSelectionSource(['text/plain'], new TextEncoder().encode(`Paging-${i}`));
+        await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src);
+    }
+    // 10项，2页
+
+    // 1. 中文状态下触发循环翻页就绪
+    ext._openPopup();
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Left });
+    assert(ext._pageBadge.text === '循环？ 1 / 2', '中文状态下提示 循环？ 1 / 2');
+
+    // 在位切换至英文
+    ext._settings.set_string('ui-language', 'en-US');
+    assert(ext._pageBadge.text === 'Loop? 1 / 2', '英文状态下提示 Loop? 1 / 2');
+
+    // 还原设置
+    ext._settings.set_string('ui-language', 'zh-CN');
+    ext._closePopup();
+    ext.disable();
+});
+
+// ============================================================================
 // 3. 执行最终报告汇算
 // ============================================================================
 const success = reporter.summary();

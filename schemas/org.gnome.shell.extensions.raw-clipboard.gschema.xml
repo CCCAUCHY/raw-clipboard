@@ -47,5 +47,14 @@
       <summary>Enable logging</summary>
       <description>Whether to output clipboard capture, eviction, and diagnostic logs to the system journal</description>
     </key>
+    <key name="ui-language" type="s">
+      <choices>
+        <choice value="zh-CN"/>
+        <choice value="en-US"/>
+      </choices>
+      <default>'zh-CN'</default>
+      <summary>UI display language</summary>
+      <description>Display language for popup window buttons and text ('zh-CN' or 'en-US')</description>
+    </key>
   </schema>
 </schemalist>

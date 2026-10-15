@@ -170,7 +170,65 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
         shortcutRow.add_suffix(shortcutBox);
         group.add(shortcutRow);
 
-        // 2. 最大历史记录限制配置项 (5 ~ 1000 项)
+        // 2. 界面语言切换按钮（中文 / English，默认中文，不读取系统语言环境）
+        const langRow = new Adw.ActionRow({
+            title: '界面语言\nInterface Language',
+            subtitle: '历史记录弹窗内的按钮、提示与状态文本的显示语言（不读取系统语言环境，默认中文）\nDisplay language for buttons, tips, and status in clipboard popup (does not read system locale, defaults to Chinese)',
+        });
+
+        const langBox = new Gtk.Box({
+            orientation: Gtk.Orientation.HORIZONTAL,
+            css_classes: ['linked'],
+            valign: Gtk.Align.CENTER,
+        });
+
+        const zhButton = new Gtk.ToggleButton({
+            label: '中文',
+        });
+        const enButton = new Gtk.ToggleButton({
+            label: 'English',
+            group: zhButton,
+        });
+
+        langBox.append(zhButton);
+        langBox.append(enButton);
+        langRow.add_suffix(langBox);
+        group.add(langRow);
+
+        const currentLang = settings.get_string('ui-language');
+        if (currentLang === 'en-US') {
+            enButton.set_active(true);
+        } else {
+            zhButton.set_active(true);
+        }
+
+        zhButton.connect('toggled', () => {
+            if (zhButton.active) {
+                settings.set_string('ui-language', 'zh-CN');
+            }
+        });
+
+        enButton.connect('toggled', () => {
+            if (enButton.active) {
+                settings.set_string('ui-language', 'en-US');
+            }
+        });
+
+        const langChangedId = settings.connect('changed::ui-language', () => {
+            const val = settings.get_string('ui-language');
+            if (val === 'en-US') {
+                if (!enButton.active) enButton.set_active(true);
+            } else {
+                if (!zhButton.active) zhButton.set_active(true);
+            }
+        });
+        window.connect('unrealize', () => {
+            try {
+                settings.disconnect(langChangedId);
+            } catch (_) {}
+        });
+
+        // 3. 最大历史记录限制配置项 (5 ~ 1000 项)
         const maxItemsRow = new Adw.SpinRow({
             title: '最大历史记录限制\nMax History Items Limit',
             subtitle: '当新的剪贴板历史记录生成或修改此限制时，若剪贴板历史记录数量超出此限制，则自动移除最早的一项记录。\n（范围：5 ~ 1000 项，默认 30 项）\nWhen a new clipboard entry is created or this limit is modified, if the number of entries exceeds this limit, the oldest entry is automatically removed.\n(Range: 5 ~ 1000 items, Default: 30 items)',
@@ -310,6 +368,10 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
             {
                 title: '关闭窗口\nClose Window',
                 subtitle: '按 Esc 键或点击窗口外部任意区域即可随时关闭（若处于搜索状态，则优先退出搜索状态）\nPress Esc or click outside the window to close at any time (exits search mode first if active).',
+            },
+            {
+                title: '多语言切换\nLanguage Switch',
+                subtitle: '本扩展完全不读取系统语言环境，保护隐私并保证行为确定；可在设置界面通过“界面语言”切换按钮随时在中文与英文间切换。\nThis extension does not read system locale at all for privacy and predictability; switch between Chinese and English anytime using the Interface Language toggle buttons in settings.',
             },
             {
                 title: '隐私与安全保护\nPrivacy and Security',
