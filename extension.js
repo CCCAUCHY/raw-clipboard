@@ -1838,7 +1838,7 @@ export default class RawClipboardExtension extends Extension {
             this._pageBadge.text = '';
             this._loopArmDirection = null;
         } else if (this._loopArmDirection) {
-            this._pageBadge.text = `0 / ${totalPages}`;
+            this._pageBadge.text = `循环？ ${this._currentPage + 1} / ${totalPages}`;
             this._pageBadge.show();
         } else {
             this._pageBadge.text = `${this._currentPage + 1} / ${totalPages}`;
@@ -2214,7 +2214,7 @@ export default class RawClipboardExtension extends Extension {
                         return Clutter.EVENT_STOP;
                     }
 
-                    // 首尾循环翻页防误触：第一页向上翻至末页、或最后一页向下翻至第一页时，首次操作仅把页码变成 0/n，二次操作才执行翻页
+                    // 首尾循环翻页防误触：第一页向上翻至末页、或最后一页向下翻至第一页时，首次操作仅提示“循环？”，二次操作才执行翻页
                     if (delta < 0 && this._currentPage === 0) {
                         if (this._loopArmDirection !== 'up') {
                             this._loopArmDirection = 'up';
@@ -2868,7 +2868,7 @@ export default class RawClipboardExtension extends Extension {
                     const prevPageCount = 8;
                     this._setPage(this._currentPage - 1, prevPageCount - 1);
                 } else if (totalPages > 1) {
-                    // 第一页首项向上跨页至最后一页尾项：首次仅变 0/n，二次操作才执行翻页
+                    // 第一页首项向上跨页至最后一页尾项：首次仅提示“循环？”，二次操作才执行翻页
                     if (this._loopArmDirection !== 'up') {
                         this._loopArmDirection = 'up';
                         this._updatePageBadge();
@@ -2893,7 +2893,7 @@ export default class RawClipboardExtension extends Extension {
                     this._clearLoopArm();
                     this._setPage(this._currentPage + 1, 0);
                 } else if (totalPages > 1) {
-                    // 最后一页尾项向下跨页至第一页首项：首次仅变 0/n，二次操作才执行翻页
+                    // 最后一页尾项向下跨页至第一页首项：首次仅提示“循环？”，二次操作才执行翻页
                     if (this._loopArmDirection !== 'down') {
                         this._loopArmDirection = 'down';
                         this._updatePageBadge();

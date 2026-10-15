@@ -289,7 +289,7 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
             },
             {
                 title: '滚动与翻页\nScroll and Page',
-                subtitle: '当历史超过 8 项时，使用鼠标滚轮上下滚动，或按方向键 ← / →（或 PageUp / PageDown）快速翻页；支持循环翻页并具备防误触保护：在第一页向上翻页或末页向下翻页时，首次操作不翻页并将页码变为 0/n，第二次操作才执行跨页并恢复正常页码显示。\nWhen history exceeds 8 items, use mouse wheel to scroll, or press Arrow Keys ← / → (or PageUp / PageDown) to flip pages; supports circular paging with anti-misoperation protection: scrolling up on the first page or down on the last page changes page badge to 0/n on the first trigger without flipping, and performs the page flip restoring normal page count on the second consecutive trigger.',
+                subtitle: '当历史超过 8 项时，使用鼠标滚轮上下滚动，或按方向键 ← / →（或 PageUp / PageDown）快速翻页；支持循环翻页并具备防误触保护：在第一页向上翻页或末页向下翻页时，首次操作不翻页并在页码左侧提示“循环？”，第二次操作才执行跨页并恢复正常页码显示。\nWhen history exceeds 8 items, use mouse wheel to scroll, or press Arrow Keys ← / → (or PageUp / PageDown) to flip pages; supports circular paging with anti-misoperation protection: scrolling up on the first page or down on the last page prompts "循环？" on the left of page badge on the first trigger without flipping, and performs the page flip restoring normal page count on the second consecutive trigger.',
             },
             {
                 title: '多种排序方式\nMultiple Sort Modes',

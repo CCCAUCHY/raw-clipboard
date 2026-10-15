@@ -2083,20 +2083,20 @@ await reporter.run('9.1 Up / Down 基础与跨页导航测试 (页内步进、�
 
     // 移至第 1 页尾项 (1)
     ext._setSelectedIndex(1);
-    // 在末页尾项按 Down -> 首次操作不翻页，页码变成 0/2
+    // 在末页尾项按 Down -> 首次操作不翻页，页码左侧提示“循环？”
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Down });
     assert(ext._currentPage === 1, '末页尾项首次 Down 不翻页，防误触保持第 1 页');
-    assert(ext._pageBadge.text === '0 / 2', '首次循环操作页码提示变成 0 / 2');
+    assert(ext._pageBadge.text === '循环？ 2 / 2', '首次循环操作页码提示变成 循环？ 2 / 2');
     // 第二次按 Down -> 正式首尾循环回到第 0 页首项 (0)，并还原正常页码
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Down });
     assert(ext._currentPage === 0, '末页尾项二次 Down 循环回第 0 页');
     assert(ext._selectedIndex === 0, '选中第 0 页首项 0');
     assert(ext._pageBadge.text === '1 / 2', '还原正常页码 1 / 2');
 
-    // 在第 0 页首项按 Up -> 首次操作不翻页，页码变成 0/2
+    // 在第 0 页首项按 Up -> 首次操作不翻页，页码左侧提示“循环？”
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Up });
     assert(ext._currentPage === 0, '首页首项首次 Up 不翻页，防误触保持第 0 页');
-    assert(ext._pageBadge.text === '0 / 2', '首次循环操作页码提示变成 0 / 2');
+    assert(ext._pageBadge.text === '循环？ 1 / 2', '首次循环操作页码提示变成 循环？ 1 / 2');
     // 第二次按 Up -> 正式首尾循环进入末页尾项，并还原正常页码
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Up });
     assert(ext._currentPage === 1, '首页首项二次 Up 循环至末页');
@@ -2134,20 +2134,34 @@ await reporter.run('9.2 Left / Right 离散翻页导航测试 (上一页/下一�
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Right });
     assert(ext._currentPage === 2, 'Right 翻到第 2 页 (末页)');
 
-    // 在末页按 Right -> 首次操作不翻页，页码变成 0/3
+    // 在末页按 Right -> 首次操作不翻页，页码左侧提示“循环？”
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Right });
     assert(ext._currentPage === 2, '末页首次按 Right 不翻页，保持第 2 页');
-    assert(ext._pageBadge.text === '0 / 3', '首次操作页码变成 0 / 3');
+    assert(ext._pageBadge.text === '循环？ 3 / 3', '首次操作页码变成 循环？ 3 / 3');
 
     // 第二次按 Right -> 正式循环翻页回到第 0 页 (首页)，还原正常页码
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Right });
     assert(ext._currentPage === 0, '末页二次按 Right 循环翻页回到第 0 页');
     assert(ext._pageBadge.text === '1 / 3', '还原正常页码 1 / 3');
 
-    // 首页按 Left -> 首次操作不翻页，页码变成 0/3
+    // 首页按 Left -> 首次操作不翻页，页码左侧提示“循环？”
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Left });
     assert(ext._currentPage === 0, '首页首次按 Left 不翻页，保持第 0 页');
-    assert(ext._pageBadge.text === '0 / 3', '首次操作页码变成 0 / 3');
+    assert(ext._pageBadge.text === '循环？ 1 / 3', '首次操作页码变成 循环？ 1 / 3');
+
+    // 就绪状态下的反向操作验证：在第 0 页就绪状态按 Right，应立即翻到第 1 页，清除就绪标记并显示正常页码 2/3
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Right });
+    assert(ext._currentPage === 1, '第 0 页就绪状态按 Right 反向操作，直接翻至第 1 页');
+    assert(ext._pageBadge.text === '2 / 3', '反向翻页后还原正常页码 2 / 3');
+    assert(ext._loopArmDirection === null, '就绪标记被清除');
+
+    // 翻回第 0 页继续测试
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Left });
+    assert(ext._currentPage === 0, '翻回第 0 页');
+
+    // 再次在首页按 Left 触发就绪
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Left });
+    assert(ext._pageBadge.text === '循环？ 1 / 3', '再次提示 循环？ 1 / 3');
 
     // 第二次按 Left -> 正式循环翻页到达第 2 页 (末页)，还原正常页码
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Left });
@@ -2183,20 +2197,20 @@ await reporter.run('9.3 PageUp / PageDown 快捷翻页测试 (上一页/下一�
     assert(ext._currentPage === 1, 'PageDown 翻至第 1 页');
     assert(ext._selectedIndex === 3, '保持选中索引 3');
 
-    // 末页按 PageDown -> 首次操作不翻页，页码变成 0/2
+    // 末页按 PageDown -> 首次操作不翻页，页码左侧提示“循环？”
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Page_Down });
     assert(ext._currentPage === 1, '末页首次 PageDown 不翻页，保持第 1 页');
-    assert(ext._pageBadge.text === '0 / 2', '首次循环操作页码提示变成 0 / 2');
+    assert(ext._pageBadge.text === '循环？ 2 / 2', '首次循环操作页码提示变成 循环？ 2 / 2');
 
     // 第二次按 PageDown -> 正式循环翻至第 0 页，还原正常页码
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Page_Down });
     assert(ext._currentPage === 0, '末页二次 PageDown 循环翻至第 0 页');
     assert(ext._pageBadge.text === '1 / 2', '还原正常页码 1 / 2');
 
-    // 首页按 PageUp -> 首次操作不翻页，页码变成 0/2
+    // 首页按 PageUp -> 首次操作不翻页，页码左侧提示“循环？”
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Page_Up });
     assert(ext._currentPage === 0, '首页首次 PageUp 不翻页，保持第 0 页');
-    assert(ext._pageBadge.text === '0 / 2', '首次循环操作页码提示变成 0 / 2');
+    assert(ext._pageBadge.text === '循环？ 1 / 2', '首次循环操作页码提示变成 循环？ 1 / 2');
 
     // 第二次按 PageUp -> 正式循环翻至末页 (第 1 页)，还原正常页码
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Page_Up });
@@ -2340,10 +2354,10 @@ await reporter.run('9.7 鼠标离散滚轮向上/向下翻页与平滑滚轮阈�
     // 等待 200ms
     GLib.usleep(200000);
 
-    // 5. 末页向下滚动循环翻页：首次不翻页且页码变 0/2，二次操作才翻回第 0 页并还原页码
+    // 5. 末页向下滚动循环翻页：首次不翻页且页码提示“循环？”，二次操作才翻回第 0 页并还原页码
     ext._popup.emit('scroll-event', makeScrollEvent(Clutter.ScrollDirection.DOWN));
     assert(ext._currentPage === 1, '末页向下首次滚动不翻页，保持第 1 页');
-    assert(ext._pageBadge.text === '0 / 2', '首次滚动页码变成 0 / 2');
+    assert(ext._pageBadge.text === '循环？ 2 / 2', '首次滚动页码变成 循环？ 2 / 2');
 
     // 等待 200ms
     GLib.usleep(200000);
@@ -2355,10 +2369,26 @@ await reporter.run('9.7 鼠标离散滚轮向上/向下翻页与平滑滚轮阈�
     // 等待 200ms
     GLib.usleep(200000);
 
-    // 6. 首页向上滚动循环翻页：首次不翻页且页码变 0/2，二次操作才到达末页第 1 页
+    // 6. 首页向上滚动循环翻页：首次不翻页且页码提示“循环？”
     ext._popup.emit('scroll-event', makeScrollEvent(Clutter.ScrollDirection.UP));
     assert(ext._currentPage === 0, '首页向上首次滚动不翻页，保持第 0 页');
-    assert(ext._pageBadge.text === '0 / 2', '首次滚动页码变成 0 / 2');
+    assert(ext._pageBadge.text === '循环？ 1 / 2', '首次滚动页码变成 循环？ 1 / 2');
+
+    // 6.1 验证滚轮就绪状态下的反向向下滚动：立即翻到下一页 (第 1 页)，清除就绪状态
+    GLib.usleep(200000);
+    ext._popup.emit('scroll-event', makeScrollEvent(Clutter.ScrollDirection.DOWN));
+    assert(ext._currentPage === 1, '首页就绪状态下向下滚动，立即翻到第 1 页');
+    assert(ext._pageBadge.text === '2 / 2', '还原正常页码 2 / 2');
+    assert(ext._loopArmDirection === null, '就绪状态已清除');
+
+    // 翻回第 0 页继续测试向上循环翻页
+    GLib.usleep(200000);
+    ext._popup.emit('scroll-event', makeScrollEvent(Clutter.ScrollDirection.UP));
+    assert(ext._currentPage === 0, '翻回第 0 页');
+
+    GLib.usleep(200000);
+    ext._popup.emit('scroll-event', makeScrollEvent(Clutter.ScrollDirection.UP));
+    assert(ext._pageBadge.text === '循环？ 1 / 2', '再次提示 循环？ 1 / 2');
 
     // 等待 200ms
     GLib.usleep(200000);
@@ -3768,10 +3798,10 @@ await reporter.run('13.6 搜索状态支持循环翻页，结果以记录顺序�
     assert(matches.length === 20, '精准匹配 20 项');
     // 总页数: ceil(20 / 8) = 3 页 (第0页: 8项, 第1页: 8项, 第2页: 4项)
     // 循环翻页测试：第 0 页按 Left / PageUp 翻至最后一页 (第 2 页)
-    // 首次操作不翻页，页码变成 0/3
+    // 首次操作不翻页，页码左侧提示“循环？”
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Left, get_state: () => 0 });
     assert(ext._currentPage === 0, '搜索状态第 0 页首次向上不翻页，保持第 0 页');
-    assert(ext._pageBadge.text === '0 / 3', '首次操作页码提示变成 0 / 3');
+    assert(ext._pageBadge.text === '循环？ 1 / 3', '首次操作页码提示变成 循环？ 1 / 3');
 
     // 二次操作正式翻至最后一页 (第 2 页)，并还原正常页码
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Left, get_state: () => 0 });
@@ -3779,10 +3809,10 @@ await reporter.run('13.6 搜索状态支持循环翻页，结果以记录顺序�
     assert(ext._pageBadge.text === '3 / 3', '还原正常页码 3 / 3');
 
     // 末页按 Right / PageDown 翻至第 0 页
-    // 首次操作不翻页，页码变成 0/3
+    // 首次操作不翻页，页码左侧提示“循环？”
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Right, get_state: () => 0 });
     assert(ext._currentPage === 2, '搜索状态末页首次向下不翻页，保持第 2 页');
-    assert(ext._pageBadge.text === '0 / 3', '首次操作页码提示变成 0 / 3');
+    assert(ext._pageBadge.text === '循环？ 3 / 3', '首次操作页码提示变成 循环？ 3 / 3');
 
     // 二次操作正式翻至第 0 页，并还原正常页码
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Right, get_state: () => 0 });
