@@ -2123,124 +2123,152 @@ export default class RawClipboardExtension extends Extension {
         }
     }
 
-    _copyTextFromEntry(entry) {
-        if (!entry) return;
-        const text = this._extractTextForm(entry);
-        if (!text || text.length === 0) return;
+    // 获取条目支持的类型转换目标列表 (Type Conversion Options)
+    _getAvailableConversions(entry) {
+        if (!entry) return [];
+        const isEn = this._getLanguage() === 'en-US';
+        const conversions = [];
 
-        const encoder = new TextEncoder();
-        const textBytes = new GLib.Bytes(encoder.encode(text));
-        const mime = 'text/plain;charset=utf-8';
-        const copyTime = Date.now();
+        // 转换为纯文本 (Convert to Plain Text):
+        // 适用于非纯文本、但包含可提取纯文本表示的类型 (多类型、富文本 HTML、文件列表等)
+        if (entry.type !== 'text' && this._isTextPreviewable(entry)) {
+            conversions.push({
+                targetType: 'text',
+                label: isEn ? 'Convert to Plain Text' : '转换为纯文本',
+                icon: 'format-text-plaintext-symbolic',
+            });
+        }
 
-        // 1. 生成单次回环标识并挂载至数据源对象，回灌守卫照常工作
-        const nonce = GLib.uuid_string_random();
-        this.#activeNonces.add(nonce);
-        GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
-            this.#activeNonces.delete(nonce);
-            return GLib.SOURCE_REMOVE;
-        });
+        return conversions;
+    }
 
-        this._isRestoring = true;
-        try {
-            let source = null;
-            if (Meta && Meta.SelectionSourceMemory && typeof Meta.SelectionSourceMemory.new === 'function') {
-                try {
-                    source = Meta.SelectionSourceMemory.new(mime, textBytes);
-                } catch (_e) {}
-            }
-            if (source) {
-                source[RESTORE_NONCE] = nonce;
-                if (this._selection && typeof this._selection.set_owner === 'function') {
-                    this._selection.set_owner(Meta.SelectionType.SELECTION_CLIPBOARD, source);
+    // 类型转换引擎 (Type Conversion Engine):
+    // 抽象各类数据格式之间的按需转换，将转换结果注入系统剪贴板并在历史队首生成标准独立条目
+    _convertEntry(entry, targetType) {
+        if (!entry || !targetType) return;
+        if (targetType === 'text') {
+            const text = this._extractTextForm(entry);
+            if (!text || text.length === 0) return;
+
+            const encoder = new TextEncoder();
+            const textBytes = new GLib.Bytes(encoder.encode(text));
+            const mime = 'text/plain;charset=utf-8';
+            const copyTime = Date.now();
+
+            // 1. 生成单次回环标识并挂载至数据源对象，回灌守卫照常工作
+            const nonce = GLib.uuid_string_random();
+            this.#activeNonces.add(nonce);
+            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+                this.#activeNonces.delete(nonce);
+                return GLib.SOURCE_REMOVE;
+            });
+
+            this._isRestoring = true;
+            try {
+                let source = null;
+                if (Meta && Meta.SelectionSourceMemory && typeof Meta.SelectionSourceMemory.new === 'function') {
+                    try {
+                        source = Meta.SelectionSourceMemory.new(mime, textBytes);
+                    } catch (_e) {}
+                }
+                if (source) {
+                    source[RESTORE_NONCE] = nonce;
+                    if (this._selection && typeof this._selection.set_owner === 'function') {
+                        this._selection.set_owner(Meta.SelectionType.SELECTION_CLIPBOARD, source);
+                    } else {
+                        const clipboard = St.Clipboard.get_default();
+                        clipboard.set_content(St.ClipboardType.CLIPBOARD, mime, textBytes);
+                    }
                 } else {
                     const clipboard = St.Clipboard.get_default();
                     clipboard.set_content(St.ClipboardType.CLIPBOARD, mime, textBytes);
                 }
-            } else {
-                const clipboard = St.Clipboard.get_default();
-                clipboard.set_content(St.ClipboardType.CLIPBOARD, mime, textBytes);
+                this._debug(`[RawClipboard] 类型转换：成功将纯文本形式注入系统剪贴板并挂载防回环标识`);
+            } finally {
+                this._isRestoring = false;
             }
-            this._debug(`[RawClipboard] 复制文本：成功将文本形式注入系统剪贴板并挂载防回环标识`);
-        } finally {
-            this._isRestoring = false;
-        }
 
-        // 2. 通过代码确保注入剪贴板的内容和添加到队首的内容一致
-        const size = textBytes.get_size();
-        const thisRef = this;
-        const insertResult = this.#radixTree.insert(mime, textBytes, leafNode => {
-            const previewInfo = generatePreview('text', mime, textBytes, null, thisRef._getLanguage());
-            let assembledBytes = (leafNode.collectPathSegments().length === 1 ? leafNode.bytes : null);
-            let cachedChecksum = null;
-            let entryTime = copyTime;
+            // 2. 通过代码确保注入剪贴板的内容和添加到队首的内容一致
+            const size = textBytes.get_size();
+            const thisRef = this;
+            const insertResult = this.#radixTree.insert(mime, textBytes, leafNode => {
+                const previewInfo = generatePreview('text', mime, textBytes, null, thisRef._getLanguage());
+                let assembledBytes = (leafNode.collectPathSegments().length === 1 ? leafNode.bytes : null);
+                let cachedChecksum = null;
+                let entryTime = copyTime;
 
-            return Object.freeze({
-                id: `${copyTime}_${Math.floor(Math.random() * 1000)}`,
-                type: 'text',
-                mime: mime,
-                size: size,
-                get bytes() {
-                    if (!assembledBytes) {
-                        const segs = leafNode.collectPathSegments();
-                        if (segs.length === 1) {
-                            assembledBytes = segs[0];
-                        } else {
-                            const out = Gio.MemoryOutputStream.new_resizable();
-                            for (const s of segs) {
-                                out.write_bytes(s, null);
+                return Object.freeze({
+                    id: `${copyTime}_${Math.floor(Math.random() * 1000)}`,
+                    type: 'text',
+                    mime: mime,
+                    size: size,
+                    get bytes() {
+                        if (!assembledBytes) {
+                            const segs = leafNode.collectPathSegments();
+                            if (segs.length === 1) {
+                                assembledBytes = segs[0];
+                            } else {
+                                const out = Gio.MemoryOutputStream.new_resizable();
+                                for (const s of segs) {
+                                    out.write_bytes(s, null);
+                                }
+                                out.close(null);
+                                assembledBytes = out.steal_as_bytes();
                             }
-                            out.close(null);
-                            assembledBytes = out.steal_as_bytes();
                         }
-                    }
-                    return assembledBytes;
-                },
-                get checksum() {
-                    if (!cachedChecksum) {
-                        cachedChecksum = GLib.compute_checksum_for_bytes(GLib.ChecksumType.MD5, this.bytes);
-                    }
-                    return cachedChecksum;
-                },
-                get thumbIcon() {
-                    return null;
-                },
-                preview: previewInfo.title,
-                subtitle: previewInfo.subtitle,
-                icon: previewInfo.icon,
-                get time() { return entryTime; },
-                set time(val) { if (typeof val === 'number') entryTime = val; },
+                        return assembledBytes;
+                    },
+                    get checksum() {
+                        if (!cachedChecksum) {
+                            cachedChecksum = GLib.compute_checksum_for_bytes(GLib.ChecksumType.MD5, this.bytes);
+                        }
+                        return cachedChecksum;
+                    },
+                    get thumbIcon() {
+                        return null;
+                    },
+                    preview: previewInfo.title,
+                    subtitle: previewInfo.subtitle,
+                    icon: previewInfo.icon,
+                    get time() { return entryTime; },
+                    set time(val) { if (typeof val === 'number') entryTime = val; },
+                });
             });
-        });
 
-        if (insertResult.isDuplicate) {
-            const existing = insertResult.existingEntry;
-            try {
-                existing.time = copyTime;
-            } catch (_) {}
+            if (insertResult.isDuplicate) {
+                const existing = insertResult.existingEntry;
+                try {
+                    existing.time = copyTime;
+                } catch (_) {}
 
-            if (this.#deletedEntries.has(existing)) {
-                this.#deletedEntries.delete(existing);
-                this._undoStack = this._undoStack.filter(e => e !== existing);
-                this._updateUndoButton();
-            }
-
-            const existingIdx = this.#history.indexOf(existing);
-            if (existingIdx !== 0) {
-                if (existingIdx > 0) {
-                    this.#history.splice(existingIdx, 1);
+                if (this.#deletedEntries.has(existing)) {
+                    this.#deletedEntries.delete(existing);
+                    this._undoStack = this._undoStack.filter(e => e !== existing);
+                    this._updateUndoButton();
                 }
-                this.#history.unshift(existing);
-            }
-        } else {
-            this.#history.unshift(insertResult.newEntry);
-            this._enforceLimit();
-        }
 
-        if (this._popup) {
-            this._closeContextMenu();
-            this._closePopup();
+                const existingIdx = this.#history.indexOf(existing);
+                if (existingIdx !== 0) {
+                    if (existingIdx > 0) {
+                        this.#history.splice(existingIdx, 1);
+                    }
+                    this.#history.unshift(existing);
+                }
+            } else {
+                this.#history.unshift(insertResult.newEntry);
+                this._enforceLimit();
+            }
+
+            if (this._popup) {
+                this._closeContextMenu();
+                this._closePopup();
+            }
         }
+    }
+
+    // 向后兼容接口：映射至类型转换引擎
+    _copyTextFromEntry(entry) {
+        return this._convertEntry(entry, 'text');
     }
 
     _deleteEntry(indexOrEntry) {
@@ -2939,7 +2967,6 @@ export default class RawClipboardExtension extends Extension {
         if (!entry || !this._container) return;
 
         const isEn = this._getLanguage() === 'en-US';
-        const isNonTextPreviewable = this._isTextPreviewable(entry) && entry.type !== 'text';
 
         const menu = new St.BoxLayout({
             name: 'rawClipboardContextMenu',
@@ -2998,51 +3025,52 @@ export default class RawClipboardExtension extends Extension {
         });
         menu.add_child(searchBtn);
 
-        // 2. 复制文本 (Copy Text) - 仅对非文本类型但以文本形式预览的项目提供
-        if (isNonTextPreviewable) {
-            const copyBox = new St.BoxLayout({
+        // 2. 类型转换 (Type Conversion) - 抽象数据格式转换功能
+        const conversions = this._getAvailableConversions(entry);
+        for (const conv of conversions) {
+            const convBox = new St.BoxLayout({
                 orientation: Clutter.Orientation.HORIZONTAL,
                 y_align: Clutter.ActorAlign.CENTER,
                 x_expand: true,
             });
-            const copyIcon = new St.Icon({
-                icon_name: 'edit-copy-symbolic',
+            const convIcon = new St.Icon({
+                icon_name: conv.icon || 'format-text-plaintext-symbolic',
                 style_class: 'raw-clipboard-menu-item-icon',
                 icon_size: 16,
                 y_align: Clutter.ActorAlign.CENTER,
             });
-            const copyLabel = new St.Label({
-                text: isEn ? 'Copy Text' : '复制文本',
+            const convLabel = new St.Label({
+                text: conv.label,
                 style_class: 'raw-clipboard-menu-item-label',
                 y_align: Clutter.ActorAlign.CENTER,
             });
-            if (copyLabel.clutter_text) copyLabel.clutter_text.use_markup = false;
-            copyBox.add_child(copyIcon);
-            copyBox.add_child(copyLabel);
+            if (convLabel.clutter_text) convLabel.clutter_text.use_markup = false;
+            convBox.add_child(convIcon);
+            convBox.add_child(convLabel);
 
-            const copyBtn = new St.Button({
+            const convBtn = new St.Button({
                 style_class: 'raw-clipboard-menu-item',
                 can_focus: true,
                 reactive: true,
                 track_hover: true,
-                child: copyBox,
+                child: convBox,
                 x_expand: true,
             });
-            let copyHandled = false;
-            const doCopy = () => {
-                if (copyHandled) return;
-                copyHandled = true;
-                this._copyTextFromEntry(entry);
+            let convHandled = false;
+            const doConvert = () => {
+                if (convHandled) return;
+                convHandled = true;
+                this._convertEntry(entry, conv.targetType);
             };
-            copyBtn.connect('clicked', doCopy);
-            copyBtn.connect('button-press-event', (_actor, event) => {
+            convBtn.connect('clicked', doConvert);
+            convBtn.connect('button-press-event', (_actor, event) => {
                 if (event.get_button() === 1) {
-                    doCopy();
+                    doConvert();
                     return Clutter.EVENT_STOP;
                 }
                 return Clutter.EVENT_STOP;
             });
-            menu.add_child(copyBtn);
+            menu.add_child(convBtn);
         }
 
         this._contextMenu = menu;
@@ -3051,7 +3079,7 @@ export default class RawClipboardExtension extends Extension {
         // 定位与屏幕边缘保护
         const monitor = Main.layoutManager.primaryMonitor || { x: 0, y: 0, width: global.stage.width, height: global.stage.height };
         const menuWidth = 140;
-        const menuHeight = isNonTextPreviewable ? 72 : 38;
+        const menuHeight = (conversions.length > 0) ? (38 + conversions.length * 34) : 38;
         let posX = (typeof x === 'number' && !isNaN(x)) ? x : 0;
         let posY = (typeof y === 'number' && !isNaN(y)) ? y : 0;
 
