@@ -500,6 +500,7 @@ export class RadixNode {
         this.bytes = bytes;
         this.parent = parent;
         this.children = new Map(); // byte (0-255) -> RadixNode
+        this.entries = new Map();  // mime -> entry (允许不同 MIME 条目零冗余物理共享同一前缀/叶子节点)
         this.entry = null;
         this._data = null;
     }
@@ -567,6 +568,7 @@ export class RadixRawTree {
         if (mime) {
             this._roots.set(mime, this._root);
         }
+        const mimeKey = mime || 'default';
         const root = this._root;
         const totalLen = gBytes.get_size();
         const uIncoming = gBytes.get_data();
@@ -576,10 +578,11 @@ export class RadixRawTree {
         while (true) {
             const remainingLen = totalLen - offset;
             if (remainingLen === 0) {
-                if (currNode.entry) {
-                    return { isDuplicate: true, existingEntry: currNode.entry };
+                if (currNode.entries.has(mimeKey)) {
+                    return { isDuplicate: true, existingEntry: currNode.entries.get(mimeKey) };
                 }
                 const entry = entryBuilder(currNode);
+                currNode.entries.set(mimeKey, entry);
                 currNode.entry = entry;
                 this.#nodeByEntry.set(entry, currNode);
                 return { isDuplicate: false, newEntry: entry };
@@ -590,6 +593,7 @@ export class RadixRawTree {
                 const leafBytes = makeSliceBytes(gBytes, uIncoming, offset, remainingLen);
                 const leaf = new RadixNode(leafBytes, currNode);
                 const entry = entryBuilder(leaf);
+                leaf.entries.set(mimeKey, entry);
                 leaf.entry = entry;
                 this.#nodeByEntry.set(entry, leaf);
                 currNode.children.set(firstByte, leaf);
@@ -622,6 +626,7 @@ export class RadixRawTree {
             offset += commonLen;
             if (offset === totalLen) {
                 const entry = entryBuilder(splitNode);
+                splitNode.entries.set(mimeKey, entry);
                 splitNode.entry = entry;
                 this.#nodeByEntry.set(entry, splitNode);
                 return { isDuplicate: false, newEntry: entry };
@@ -629,6 +634,7 @@ export class RadixRawTree {
                 const newSuffixBytes = makeSliceBytes(gBytes, uIncoming, offset, totalLen - offset);
                 const newLeaf = new RadixNode(newSuffixBytes, splitNode);
                 const entry = entryBuilder(newLeaf);
+                newLeaf.entries.set(mimeKey, entry);
                 newLeaf.entry = entry;
                 this.#nodeByEntry.set(entry, newLeaf);
                 splitNode.children.set(uIncoming[offset], newLeaf);
@@ -642,16 +648,35 @@ export class RadixRawTree {
         const node = this.#nodeByEntry.get(entry) || entry._radixNode;
         if (!node) return;
         this.#nodeByEntry.delete(entry);
-        node.entry = null;
+        if (node.entries) {
+            if (entry.mime) {
+                node.entries.delete(entry.mime);
+            } else {
+                for (const [m, e] of node.entries.entries()) {
+                    if (e === entry) {
+                        node.entries.delete(m);
+                        break;
+                    }
+                }
+            }
+            if (node.entries.size === 0) {
+                node.entry = null;
+            } else {
+                node.entry = node.entries.values().next().value;
+            }
+        } else {
+            node.entry = null;
+        }
 
         let curr = node;
-        while (curr && curr.parent && curr.children.size === 0 && !curr.entry) {
+        while (curr && curr.parent && curr.children.size === 0 && (!curr.entries || curr.entries.size === 0) && !curr.entry) {
             const parent = curr.parent;
             const firstByte = curr.data[0];
             parent.children.delete(firstByte);
 
             // 若父节点不是根、无挂载条目且仅剩单个子节点，自动合并收缩
-            if (parent.parent && parent.children.size === 1 && !parent.entry) {
+            const parentHasEntries = (parent.entries && parent.entries.size > 0) || parent.entry;
+            if (parent.parent && parent.children.size === 1 && !parentHasEntries) {
                 const [, onlyChild] = parent.children.entries().next().value;
                 const out = Gio.MemoryOutputStream.new_resizable();
                 out.write_bytes(parent.bytes, null);
@@ -2201,35 +2226,34 @@ export default class RawClipboardExtension extends Extension {
         this._restoreEntryFormat(entry, defaultMime);
     }
 
-    // 获取条目支持的类型转换目标列表 (Type Conversion Options)
+    // 获取条目支持的右键操作列表 (Context Menu Action Options)
     _getAvailableConversions(entry) {
         if (!entry) return [];
         const isEn = this._getLanguage() === 'en-US';
         const conversions = [];
 
-        // 转换为纯文本 (Convert to Plain Text):
-        // 适用于非纯文本、但包含可提取纯文本表示的类型 (多类型、富文本 HTML、文件列表等)
+        // 复制文本 (Copy Text):
+        // 转换为文本只对以文本形式预览的记录开放 (非纯文本但能以文本预览的记录: 富文本 HTML、文件列表、多类型等)
         if (entry.type !== 'text' && this._isTextPreviewable(entry)) {
             conversions.push({
                 targetType: 'text',
-                label: isEn ? 'Convert to Plain Text' : '转换为纯文本',
-                icon: 'format-text-plaintext-symbolic',
+                label: isEn ? 'Copy Text' : '复制文本',
+                icon: 'edit-copy-symbolic',
             });
         }
 
         return conversions;
     }
 
-    // 类型转换引擎 (Type Conversion Engine):
-    // 抽象各类数据格式之间的按需转换，将转换结果注入系统剪贴板并在历史队首生成标准独立条目
+    // 复制文本 / 类型转换引擎 (Copy as Text Engine):
+    // 直接换文本类型标签，不再进行任何解析和修改；原样以文本类型回灌剪贴板，并向队首注入相同的文本记录
     _convertEntry(entry, targetType) {
         if (!entry || !targetType) return;
         if (targetType === 'text') {
-            const text = this._extractTextForm(entry);
-            if (!text || text.length === 0) return;
+            // 直接换文本类型标签，不再进行任何解析和修改
+            const textBytes = (entry.type === 'composite' && entry.textBytes) ? entry.textBytes : entry.bytes;
+            if (!textBytes || textBytes.get_size() === 0) return;
 
-            const encoder = new TextEncoder();
-            const textBytes = new GLib.Bytes(encoder.encode(text));
             const mime = 'text/plain;charset=utf-8';
             const copyTime = Date.now();
 
@@ -2353,6 +2377,10 @@ export default class RawClipboardExtension extends Extension {
 
     // 向后兼容接口：映射至类型转换引擎
     _copyTextFromEntry(entry) {
+        return this._convertEntry(entry, 'text');
+    }
+
+    _copyAsText(entry) {
         return this._convertEntry(entry, 'text');
     }
 

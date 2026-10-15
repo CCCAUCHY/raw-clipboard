@@ -4195,7 +4195,7 @@ await reporter.run('15.2 右键菜单按类型差异化选项展示测试 (非�
     ext.disable();
 });
 
-await reporter.run('15.3 富文本 (HTML) “复制文本”功能测试 (标签剥离、回灌守卫防自读、剪贴板与队首内容代码级绝对一致)', async () => {
+await reporter.run('15.3 富文本 (HTML) “复制文本”功能测试 (直接换文本类型标签无修改解析、回灌守卫防自读、剪贴板与队首内容代码级绝对一致)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -4226,15 +4226,14 @@ await reporter.run('15.3 富文本 (HTML) “复制文本”功能测试 (标签
     assert(newHead.type === 'text', '队首新增条目类型为 text');
     assert(newHead.mime === 'text/plain;charset=utf-8', 'MIME 为 text/plain;charset=utf-8');
 
-    // 验证纯文本剥离与实体解析正确性
+    // 验证原样数据直接更换文本类型标签，不进行任何破坏性解析或标签剥离
     const decodedText = new TextDecoder().decode(newHead.bytes.get_data ? newHead.bytes.get_data() : newHead.bytes.toArray());
-    assert(decodedText === 'Welcome to Deepmind & RawClipboard!', `提取并注入的纯文本应去除标签并还原实体，实际: ${decodedText}`);
-    assert(newHead.preview === 'Welcome to Deepmind & RawClipboard!', '条目预览与注入文本一致');
+    assert(decodedText === htmlPayload, `文本转换直接更换标签，原始字符原样保留，实际: ${decodedText}`);
 
     ext.disable();
 });
 
-await reporter.run('15.4 文件列表 (Files) “复制文本”功能测试 (URI转标准文件路径、多文件换行连接、队首入库一致性)', async () => {
+await reporter.run('15.4 文件列表 (Files) “复制文本”功能测试 (直接换文本类型标签原样进出、队首入库一致性)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -4260,15 +4259,15 @@ await reporter.run('15.4 文件列表 (Files) “复制文本”功能测试 (UR
     assert(ext._getVisibleEntries().length === 2, '队列增加至 2 项');
     const newHead = ext._getVisibleEntries()[0];
     assert(newHead.type === 'text', '队首新条目为 text 类型');
+    assert(newHead.mime === 'text/plain;charset=utf-8', 'MIME 为 text/plain;charset=utf-8');
 
     const decoded = new TextDecoder().decode(newHead.bytes.get_data ? newHead.bytes.get_data() : newHead.bytes.toArray());
-    const expected = '/home/vmuser/first_file.png\n/home/vmuser/second document 测试.pdf';
-    assert(decoded === expected, `多文件路径应转换本地标准路径并多行拼接，实际: ${decoded}`);
+    assert(decoded === filesPayload, `文件列表原样数据直接换标签为纯文本，实际: ${decoded}`);
 
     ext.disable();
 });
 
-await reporter.run('15.5 右键菜单多语言切换测试 (中文“带入搜索”/“转换为纯文本”与英文“Search Preview”/“Convert to Plain Text”)', async () => {
+await reporter.run('15.5 右键菜单多语言切换测试 (中文“带入搜索”/“复制文本”与英文“Search Preview”/“Copy Text”)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -4281,7 +4280,7 @@ await reporter.run('15.5 右键菜单多语言切换测试 (中文“带入搜�
     const searchLabelZh = ext._contextMenu.get_children()[0].child.get_children()[1].text;
     const copyLabelZh = ext._contextMenu.get_children()[1].child.get_children()[1].text;
     assert(searchLabelZh === '带入搜索', '中文状态下按钮0为 带入搜索');
-    assert(copyLabelZh === '转换为纯文本', '中文状态下按钮1为 转换为纯文本');
+    assert(copyLabelZh === '复制文本', '中文状态下按钮1为 复制文本');
     ext._closeContextMenu();
 
     // 2. 切换至英文
@@ -4290,7 +4289,7 @@ await reporter.run('15.5 右键菜单多语言切换测试 (中文“带入搜�
     const searchLabelEn = ext._contextMenu.get_children()[0].child.get_children()[1].text;
     const copyLabelEn = ext._contextMenu.get_children()[1].child.get_children()[1].text;
     assert(searchLabelEn === 'Search Preview', '英文状态下按钮0为 Search Preview');
-    assert(copyLabelEn === 'Convert to Plain Text', '英文状态下按钮1为 Convert to Plain Text');
+    assert(copyLabelEn === 'Copy Text', '英文状态下按钮1为 Copy Text');
 
     // 还原
     ext._settings.set_string('ui-language', 'zh-CN');
@@ -4429,7 +4428,7 @@ await reporter.run('16.4 复合类型全生命周期捕获、文本预览提取�
     ext.disable();
 });
 
-await reporter.run('16.5 多类型右键菜单操作与“转换为纯文本”测试 (带入搜索、文本提取入库与系统剪贴板注入)', async () => {
+await reporter.run('16.5 多类型右键菜单操作与“复制文本”测试 (带入搜索、文本提取入库与系统剪贴板注入)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -4451,7 +4450,7 @@ await reporter.run('16.5 多类型右键菜单操作与“转换为纯文本”�
     ext._itemSlots[0].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [120, 120] });
     assert(ext._contextMenu !== null, '多类型条目成功呼出右键菜单');
     const menuItems = ext._contextMenu.get_children();
-    assert(menuItems.length === 2, '多类型包含 2 个右键操作项 (带入搜索与转换为纯文本)');
+    assert(menuItems.length === 2, '多类型包含 2 个右键操作项 (带入搜索与复制文本)');
 
     // 1. 点击“带入搜索”
     const searchBtn = menuItems[0];
@@ -4460,7 +4459,7 @@ await reporter.run('16.5 多类型右键菜单操作与“转换为纯文本”�
     assert(ext._searchQuery === 'Visit Site', '搜索框内容覆盖带入前缀纯文本');
     ext._exitSearchMode();
 
-    // 2. 重新右键并点击“转换为纯文本”
+    // 2. 重新右键并点击“复制文本”
     ext._itemSlots[0].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [120, 120] });
     const copyBtn = ext._contextMenu.get_children()[1];
     copyBtn.emit('button-press-event', { get_button: () => 1 });
