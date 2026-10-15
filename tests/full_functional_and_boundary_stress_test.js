@@ -4514,6 +4514,87 @@ await reporter.run('16.6 复合类型原样富文本回灌测试 (优先回灌 t
     ext.disable();
 });
 
+await reporter.run('16.7 左侧 48x48 扁平化正方形类型按钮多格式回灌与单多类型统一架构测试', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 1. 模拟复制多类型数据 (HTML + Text)
+    const htmlData = '<h1>Title</h1><p>Paragraph with <b>bold</b> text</p>';
+    const textData = 'Title\nParagraph with bold text';
+    const multiSource = new MockSelectionSource(
+        ['text/html', 'text/plain'],
+        {
+            'text/html': new TextEncoder().encode(htmlData),
+            'text/plain': new TextEncoder().encode(textData),
+        }
+    );
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, multiSource);
+
+    // 2. 模拟复制单类型纯文本数据
+    const singleSource = new MockSelectionSource(
+        ['text/plain'],
+        new TextEncoder().encode('Single pure text item')
+    );
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, singleSource);
+
+    const entries = ext._getVisibleEntries();
+    assert(entries.length === 2, '历史记录包含 2 个条目');
+
+    const singleEntry = entries[0];
+    const multiEntry = entries[1];
+
+    // 验证 entry.formats 统一属性
+    assert(Array.isArray(singleEntry.formats), '单类型条目具有 formats 数组');
+    assert(singleEntry.formats.length === 1, '单类型条目 formats 仅包含 1 种格式');
+    assert(singleEntry.formats[0].mime === 'text/plain', '单类型格式 MIME 为 text/plain');
+
+    assert(Array.isArray(multiEntry.formats), '多类型条目具有 formats 数组');
+    assert(multiEntry.formats.length === 2, '多类型条目 formats 包含 2 种格式 (HTML 与纯文本)');
+    assert(multiEntry.formats[0].mime === 'text/html', '多类型格式 0 为 text/html');
+    assert(multiEntry.formats[1].mime === 'text/plain', '多类型格式 1 为 text/plain');
+
+    // 打开弹窗，验证 UI 槽位上的 48x48 扁平化正方形类型按钮
+    ext._openPopup();
+
+    // 槽位 0 (单类型): 仅显示 1 个 48x48 按钮，第 2 个按钮隐藏
+    const slot0 = ext._itemSlots[0];
+    assert(slot0.typeBtn0.width === 48 && slot0.typeBtn0.height === 48, '单类型左侧按钮严格为 48x48 正方形');
+    assert(slot0.typeBtn0.has_style_class_name('first-btn') === true, '第 1 个按钮具有 first-btn 样式');
+    assert(slot0.typeBtn0.visible === true, '单类型主按钮显示');
+    assert(slot0.typeBtn1.visible === false, '单类型副按钮隐藏');
+
+    // 槽位 1 (多类型): 并排显示 2 个 48x48 按钮 (HTML 按钮与纯文本按钮)
+    const slot1 = ext._itemSlots[1];
+    assert(slot1.typeBtn0.width === 48 && slot1.typeBtn0.height === 48, '多类型 HTML 按钮严格为 48x48 正方形');
+    assert(slot1.typeBtn1.width === 48 && slot1.typeBtn1.height === 48, '多类型纯文本按钮严格为 48x48 正方形');
+    assert(slot1.typeBtn0.has_style_class_name('first-btn') === true, 'HTML 按钮具有 first-btn 左侧圆角样式');
+    assert(slot1.typeBtn0.visible === true, '多类型 HTML 按钮显示');
+    assert(slot1.typeBtn1.visible === true, '多类型纯文本按钮显示');
+
+    // 3. 点击多类型槽位的第 2 个按钮 (纯文本图标): 绕过目标应用门禁，以纯文本形式回灌系统剪贴板
+    globalThis._lastOwnedSource = null;
+    slot1.typeBtn1.emit('clicked');
+
+    const restoredTextSource = globalThis._lastOwnedSource;
+    assert(restoredTextSource !== null, '点击纯文本按钮成功写回剪贴板');
+    assert(restoredTextSource.get_mimetypes()[0] === 'text/plain', '回灌 MIME 必须为 text/plain');
+    assert(typeof restoredTextSource[RESTORE_NONCE] === 'string', '回灌源挂载防回环 RESTORE_NONCE');
+
+    // 4. 再次打开弹窗，点击多类型槽位的第 1 个按钮 (HTML 图标): 以富文本形式回灌系统剪贴板
+    ext._openPopup();
+    // 此时多类型已由 LRU 提升至队首 (槽位 0)
+    const newSlot0 = ext._itemSlots[0];
+    globalThis._lastOwnedSource = null;
+    newSlot0.typeBtn0.emit('clicked');
+
+    const restoredHtmlSource = globalThis._lastOwnedSource;
+    assert(restoredHtmlSource !== null, '点击 HTML 按钮成功写回剪贴板');
+    assert(restoredHtmlSource.get_mimetypes()[0] === 'text/html', '回灌 MIME 必须为 text/html');
+    assert(typeof restoredHtmlSource[RESTORE_NONCE] === 'string', '回灌源挂载防回环 RESTORE_NONCE');
+
+    ext.disable();
+});
+
 // ============================================================================
 // 3. 执行最终报告汇算
 // ============================================================================

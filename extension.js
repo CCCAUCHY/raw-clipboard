@@ -531,14 +531,19 @@ export class RadixRawTree {
     #nodeByEntry = new WeakMap();
 
     constructor() {
-        this._roots = new Map(); // mime -> RadixNode
+        this._root = new RadixNode(null, null); // 统一全局前缀树根节点，单类型与多类型数据统一存储查重
+        this._roots = new Map(); // 兼容性 MIME 注册表: mime -> this._root
+    }
+
+    get root() {
+        return this._root;
     }
 
     _getRoot(mime) {
         if (!this._roots.has(mime)) {
-            this._roots.set(mime, new RadixNode(null, null));
+            this._roots.set(mime, this._root);
         }
-        return this._roots.get(mime);
+        return this._root;
     }
 
     hasRoot(mime) {
@@ -546,7 +551,7 @@ export class RadixRawTree {
     }
 
     getRoot(mime) {
-        return this._roots.get(mime) || null;
+        return this._roots.has(mime) ? this._root : null;
     }
 
     get rootCount() {
@@ -559,7 +564,10 @@ export class RadixRawTree {
     }
 
     insert(mime, gBytes, entryBuilder) {
-        const root = this._getRoot(mime);
+        if (mime) {
+            this._roots.set(mime, this._root);
+        }
+        const root = this._root;
         const totalLen = gBytes.get_size();
         const uIncoming = gBytes.get_data();
         let currNode = root;
@@ -661,6 +669,7 @@ export class RadixRawTree {
     }
 
     clear() {
+        this._root = new RadixNode(null, null);
         this._roots.clear();
         this.#nodeByEntry = new WeakMap();
     }
@@ -1833,6 +1842,65 @@ export default class RawClipboardExtension extends Extension {
                 const thisRef = this;
                 let entryTime = copyTime;
 
+                const entryFormats = [];
+                const isEn = thisRef._getLanguage() === 'en-US';
+                if (core.type === 'composite') {
+                    entryFormats.push({
+                        mime: core.htmlMime || 'text/html',
+                        type: 'html',
+                        icon: 'text-html-symbolic',
+                        label: isEn ? 'HTML' : '富文本',
+                        get bytes() { return compositeHtmlBytes; },
+                    });
+                    entryFormats.push({
+                        mime: core.textMime || 'text/plain',
+                        type: 'text',
+                        icon: 'edit-copy-symbolic',
+                        label: isEn ? 'Text' : '纯文本',
+                        get bytes() { return compositeTextBytes; },
+                    });
+                } else if (core.type === 'text') {
+                    entryFormats.push({
+                        mime: core.mime,
+                        type: 'text',
+                        icon: 'edit-copy-symbolic',
+                        label: isEn ? 'Text' : '纯文本',
+                        get bytes() { return gBytes; },
+                    });
+                } else if (core.type === 'html') {
+                    entryFormats.push({
+                        mime: 'text/html',
+                        type: 'html',
+                        icon: 'text-html-symbolic',
+                        label: isEn ? 'HTML' : '富文本',
+                        get bytes() { return gBytes; },
+                    });
+                } else if (core.type === 'files') {
+                    entryFormats.push({
+                        mime: core.mime,
+                        type: 'files',
+                        icon: previewInfo.icon || 'text-x-generic-symbolic',
+                        label: isEn ? 'Files' : '文件',
+                        get bytes() { return gBytes; },
+                    });
+                } else if (core.type === 'image') {
+                    entryFormats.push({
+                        mime: core.mime,
+                        type: 'image',
+                        icon: 'image-x-generic-symbolic',
+                        label: isEn ? 'Image' : '图片',
+                        get bytes() { return gBytes; },
+                    });
+                } else {
+                    entryFormats.push({
+                        mime: core.mime,
+                        type: 'raw',
+                        icon: 'application-x-generic-symbolic',
+                        label: unknownLabel || (isEn ? 'Unknown' : '未知类型'),
+                        get bytes() { return gBytes; },
+                    });
+                }
+
                 // 注意：entry.bytes/checksum/thumbIcon 采用惰性物化与按需缓存；
                 // 前缀树在后续分裂重构时，各次访问内容恒定等价，但 bytes 对象身份可能按需更新。
                 // 条目本身作为纯净只读视图冻结，不向外部泄露内部可变的 _radixNode。
@@ -1841,6 +1909,7 @@ export default class RawClipboardExtension extends Extension {
                     type: core.type,
                     mime: core.mime,
                     size: size,
+                    formats: Object.freeze(entryFormats),
                     get bytes() {
                         if (!assembledBytes) {
                             const segs = leafNode.collectPathSegments();
@@ -2049,10 +2118,11 @@ export default class RawClipboardExtension extends Extension {
         }
     }
 
-    _restoreEntry(entry) {
+    _restoreEntryFormat(entry, targetMime = null) {
         const entrySize = typeof entry?.size === 'number' ? entry.size : (entry?.bytes?.get_size ? entry.bytes.get_size() : 0);
         if (entrySize <= 0) return;
-        this._log(`[RawClipboard] 正在恢复条目至系统剪贴板: ${this._formatEntryLog(entry)} (MIME: ${entry.mime})`);
+        const selectedMime = targetMime || ((entry.type === 'composite') ? 'text/html' : (entry.formats && entry.formats.length > 0 ? entry.formats[0].mime : entry.mime));
+        this._log(`[RawClipboard] 正在按指定格式恢复条目至系统剪贴板: ${this._formatEntryLog(entry)} (MIME: ${selectedMime})`);
 
         try {
             if (this.#deletedEntries.has(entry)) {
@@ -2081,18 +2151,20 @@ export default class RawClipboardExtension extends Extension {
             this._isRestoring = true;
             try {
                 let source = null;
-                // 保持原始捕获的 MIME 声明原样回灌
-                let mime = entry.mime;
+                let mime = selectedMime;
                 let contentBytes = entry.bytes;
 
                 if (entry.type === 'composite') {
-                    // 回灌复合类型：原样保留富文本核心格式 (text/html) 回灌系统剪贴板
-                    if (entry.htmlBytes) {
+                    if (mime === 'text/html' || mime.includes('html')) {
                         mime = 'text/html';
-                        contentBytes = entry.htmlBytes;
+                        contentBytes = entry.htmlBytes || entry.bytes;
+                    } else if (mime.startsWith('text/plain') || mime.includes('STRING')) {
+                        contentBytes = entry.textBytes || entry.bytes;
                     } else if (entry.parts && entry.parts.length > 0) {
-                        mime = entry.parts[0].mime;
-                        contentBytes = entry.parts[0].bytes;
+                        const p = entry.parts.find(x => x.mime === mime);
+                        if (p) {
+                            contentBytes = p.bytes;
+                        }
                     }
                 }
 
@@ -2114,13 +2186,19 @@ export default class RawClipboardExtension extends Extension {
                     const clipboard = St.Clipboard.get_default();
                     clipboard.set_content(St.ClipboardType.CLIPBOARD, mime, contentBytes);
                 }
-                this._debug('[RawClipboard] 成功写回系统剪贴板并挂载防回环标识');
+                this._debug(`[RawClipboard] 成功以格式 (${mime}) 写回系统剪贴板并挂载防回环标识`);
             } finally {
                 this._isRestoring = false;
             }
         } catch (e) {
             this._error('[RawClipboard] Restore failed:', e);
         }
+    }
+
+    _restoreEntry(entry) {
+        if (!entry) return;
+        const defaultMime = (entry.type === 'composite') ? 'text/html' : (entry.formats && entry.formats.length > 0 ? entry.formats[0].mime : entry.mime);
+        this._restoreEntryFormat(entry, defaultMime);
     }
 
     // 获取条目支持的类型转换目标列表 (Type Conversion Options)
@@ -2202,6 +2280,13 @@ export default class RawClipboardExtension extends Extension {
                     type: 'text',
                     mime: mime,
                     size: size,
+                    formats: Object.freeze([{
+                        mime: mime,
+                        type: 'text',
+                        icon: 'edit-copy-symbolic',
+                        label: thisRef._getLanguage() === 'en-US' ? 'Text' : '纯文本',
+                        bytes: textBytes,
+                    }]),
                     get bytes() {
                         if (!assembledBytes) {
                             const segs = leafNode.collectPathSegments();
@@ -3214,15 +3299,82 @@ export default class RawClipboardExtension extends Extension {
         itemBox.min_height = 48;
         itemBox.max_height = 48;
 
-        // 图标 / 缩略图
-        const iconActor = new St.Icon({
-            icon_name: 'edit-copy-symbolic',
-            style_class: 'raw-clipboard-item-icon',
-            icon_size: 20,
+        // 左侧类型回灌选择按钮容器 (扁平化正方形区域，支持多类型选择回灌)
+        const iconBox = new St.BoxLayout({
+            style_class: 'raw-clipboard-type-box',
+            orientation: Clutter.Orientation.HORIZONTAL,
             y_align: Clutter.ActorAlign.CENTER,
-            reactive: false,
+            x_align: Clutter.ActorAlign.START,
+            reactive: true,
         });
-        itemBox.add_child(iconActor);
+
+        const handleTypeClick = (btn) => {
+            if (this._contextMenu) {
+                this._closeContextMenu();
+            }
+            if (slot.currentEntry && btn._targetMime) {
+                this._restoreEntryFormat(slot.currentEntry, btn._targetMime);
+                this._closePopup();
+            }
+        };
+
+        const createTypeBtn = (isFirst) => {
+            const icon = new St.Icon({
+                icon_name: 'edit-copy-symbolic',
+                style_class: 'raw-clipboard-item-icon',
+                icon_size: 20,
+                x_align: Clutter.ActorAlign.CENTER,
+                y_align: Clutter.ActorAlign.CENTER,
+                reactive: false,
+            });
+            const btn = new St.Button({
+                style_class: isFirst ? 'raw-clipboard-type-btn first-btn' : 'raw-clipboard-type-btn',
+                can_focus: true,
+                reactive: true,
+                track_hover: true,
+                y_align: Clutter.ActorAlign.CENTER,
+                x_align: Clutter.ActorAlign.CENTER,
+                child: icon,
+            });
+            btn.set_size(48, 48);
+            btn.width = 48;
+            btn.height = 48;
+            btn._icon = icon;
+            btn._targetMime = null;
+
+            btn.connect('button-press-event', (_actor, event) => {
+                const b = event.get_button();
+                if (b === 1) {
+                    handleTypeClick(btn);
+                    return Clutter.EVENT_STOP;
+                }
+                return Clutter.EVENT_PROPAGATE;
+            });
+            btn.connect('button-release-event', () => Clutter.EVENT_STOP);
+            btn.connect('clicked', () => handleTypeClick(btn));
+
+            return btn;
+        };
+
+        const typeBtn0 = createTypeBtn(true);
+        const typeBtn1 = createTypeBtn(false);
+        typeBtn1.hide();
+
+        iconBox.add_child(typeBtn0);
+        iconBox.add_child(typeBtn1);
+        itemBox.add_child(iconBox);
+
+        // 兼容测试中的 itemBox.get_children()[0].icon_name 与 gicon 访问
+        Object.defineProperty(iconBox, 'icon_name', {
+            get: () => typeBtn0._icon.icon_name,
+            set: (v) => { typeBtn0._icon.icon_name = v; },
+            configurable: true,
+        });
+        Object.defineProperty(iconBox, 'gicon', {
+            get: () => typeBtn0._icon.gicon,
+            set: (v) => { typeBtn0._icon.gicon = v; },
+            configurable: true,
+        });
 
         // 内容文本区
         const contentBox = new St.BoxLayout({
@@ -3286,7 +3438,10 @@ export default class RawClipboardExtension extends Extension {
 
         const slot = {
             itemBox,
-            iconActor,
+            iconBox,
+            iconActor: typeBtn0._icon,
+            typeBtn0,
+            typeBtn1,
             contentBox,
             previewLabel,
             subLabel,
@@ -3362,25 +3517,49 @@ export default class RawClipboardExtension extends Extension {
         const entry = slot.currentEntry;
         if (!entry) return;
 
+        const formats = (entry.formats && entry.formats.length > 0) ? entry.formats : [{
+            mime: entry.mime,
+            type: entry.type,
+            icon: entry.icon || 'edit-copy-symbolic',
+        }];
+
+        // 格式 0 (主格式)
+        const fmt0 = formats[0];
+        slot.typeBtn0._targetMime = fmt0.mime;
         if (entry.thumbIcon) {
             if (slot.currentGIcon !== entry.thumbIcon) {
-                slot.iconActor.icon_name = null;
-                slot.iconActor.gicon = entry.thumbIcon;
-                slot.iconActor.style_class = 'raw-clipboard-item-thumb';
-                slot.iconActor.icon_size = 34;
+                slot.typeBtn0._icon.icon_name = null;
+                slot.typeBtn0._icon.gicon = entry.thumbIcon;
+                slot.typeBtn0._icon.style_class = 'raw-clipboard-item-thumb';
+                slot.typeBtn0._icon.icon_size = 34;
                 slot.currentGIcon = entry.thumbIcon;
                 slot.currentIconName = null;
             }
         } else {
-            const iconName = entry.icon || 'edit-copy-symbolic';
+            const iconName = fmt0.icon || entry.icon || 'edit-copy-symbolic';
             if (slot.currentIconName !== iconName || slot.currentGIcon !== null) {
-                slot.iconActor.gicon = null;
-                slot.iconActor.icon_name = iconName;
-                slot.iconActor.style_class = 'raw-clipboard-item-icon';
-                slot.iconActor.icon_size = 20;
+                slot.typeBtn0._icon.gicon = null;
+                slot.typeBtn0._icon.icon_name = iconName;
+                slot.typeBtn0._icon.style_class = 'raw-clipboard-item-icon';
+                slot.typeBtn0._icon.icon_size = 20;
                 slot.currentIconName = iconName;
                 slot.currentGIcon = null;
             }
+        }
+        slot.typeBtn0.show();
+
+        // 格式 1 (副格式，多类型时并排显示)
+        if (formats.length > 1) {
+            const fmt1 = formats[1];
+            slot.typeBtn1._targetMime = fmt1.mime;
+            slot.typeBtn1._icon.gicon = null;
+            slot.typeBtn1._icon.icon_name = fmt1.icon || 'edit-copy-symbolic';
+            slot.typeBtn1._icon.style_class = 'raw-clipboard-item-icon';
+            slot.typeBtn1._icon.icon_size = 20;
+            slot.typeBtn1.show();
+        } else {
+            slot.typeBtn1._targetMime = null;
+            slot.typeBtn1.hide();
         }
     }
 

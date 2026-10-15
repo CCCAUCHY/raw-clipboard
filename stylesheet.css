@@ -94,11 +94,11 @@
     height: 48px;
     min-height: 48px;
     max-height: 48px;
-    padding: 0 0 0 10px;
+    padding: 0;
     margin: 0;
     border: none;
     border-radius: 12px;
-    spacing: 8px;
+    spacing: 0;
     transition-duration: 100ms;
     background-color: transparent;
 }
@@ -111,16 +111,54 @@
     background-color: rgba(255, 255, 255, 0.14);
 }
 
+/* 左侧类型回灌选择按钮容器 (支持单类型 48x48 或多类型并排) */
+.raw-clipboard-type-box {
+    margin: 0;
+    padding: 0;
+    spacing: 0;
+}
+
+/* 扁平化正方形类型按钮 (48x48 正方形点击热区，居于条目左侧，仿照删除按钮扁平化设计) */
+.raw-clipboard-type-btn {
+    min-width: 48px;
+    min-height: 48px;
+    max-width: 48px;
+    max-height: 48px;
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    margin: 0;
+    border: none;
+    border-radius: 0;
+    background-color: transparent;
+    color: rgba(255, 255, 255, 0.65);
+    transition-duration: 120ms;
+}
+
+.raw-clipboard-type-btn.first-btn {
+    border-radius: 12px 0 0 12px;
+}
+
+.raw-clipboard-type-btn:hover {
+    background-color: rgba(255, 255, 255, 0.16);
+    color: #ffffff;
+}
+
+.raw-clipboard-type-btn:active {
+    background-color: rgba(255, 255, 255, 0.28);
+    color: #ffffff;
+}
+
 .raw-clipboard-item-icon {
     icon-size: 20px;
-    margin-right: 6px;
+    margin: 0;
     color: rgba(255, 255, 255, 0.85);
 }
 
 /* 图片缩略图微衬底 */
 .raw-clipboard-item-thumb {
     icon-size: 34px;
-    margin-right: 6px;
+    margin: 0;
     border-radius: 6px;
     border: 1px solid rgba(255, 255, 255, 0.1);
     background-color: rgba(0, 0, 0, 0.25);
@@ -128,6 +166,8 @@
 
 .raw-clipboard-item-content {
     spacing: 2px;
+    padding-left: 8px;
+    padding-right: 4px;
 }
 
 .raw-clipboard-item-preview {
