@@ -598,6 +598,7 @@ export default class RawClipboardExtension extends Extension {
     }
 
     _enterSearchMode(initialChar = '') {
+        this._loopArmDirection = null;
         this._inSearchMode = true;
         this._searchQuery = (initialChar || '').slice(0, MAX_SEARCH_QUERY_LEN);
         if (this._sortBar) this._sortBar.hide();
@@ -611,6 +612,7 @@ export default class RawClipboardExtension extends Extension {
 
     _exitSearchMode() {
         if (!this._inSearchMode) return;
+        this._loopArmDirection = null;
         this._inSearchMode = false;
         this._searchQuery = '';
         if (this._searchEntry) {
@@ -734,6 +736,7 @@ export default class RawClipboardExtension extends Extension {
                 }
             });
         }
+        this._loopArmDirection = null;
         this._currentPage = 0;
         this._selectedIndex = 0;
         if (this._popup && this._popup.visible) {
@@ -1708,6 +1711,7 @@ export default class RawClipboardExtension extends Extension {
 
         this.#deletedEntries.add(entry);
         this._undoStack.push(entry);
+        this._loopArmDirection = null;
         this._debug(`[RawClipboard] 暂存删除历史条目: ${this._formatEntryLog(entry)} (待删除条目数: ${this.#deletedEntries.size})`);
 
         const remainingCount = sortedEntries.length - 1;
@@ -1734,6 +1738,7 @@ export default class RawClipboardExtension extends Extension {
         if (!entry) return false;
 
         this.#deletedEntries.delete(entry);
+        this._loopArmDirection = null;
         this._debug(`[RawClipboard] 撤销删除，已恢复条目: ${this._formatEntryLog(entry)}`);
 
         const sortedEntries = this._getSortedEntries();
@@ -1814,6 +1819,15 @@ export default class RawClipboardExtension extends Extension {
         };
     }
 
+    _loopArmDirection = null; // null | 'up' | 'down'
+
+    _clearLoopArm() {
+        if (this._loopArmDirection) {
+            this._loopArmDirection = null;
+            this._updatePageBadge();
+        }
+    }
+
     _updatePageBadge() {
         if (!this._pageBadge) return;
         const currentEntries = this._getSortedEntries();
@@ -1822,6 +1836,10 @@ export default class RawClipboardExtension extends Extension {
         if (totalCount === 0 || totalPages <= 1) {
             this._pageBadge.hide();
             this._pageBadge.text = '';
+            this._loopArmDirection = null;
+        } else if (this._loopArmDirection) {
+            this._pageBadge.text = `0 / ${totalPages}`;
+            this._pageBadge.show();
         } else {
             this._pageBadge.text = `${this._currentPage + 1} / ${totalPages}`;
             this._pageBadge.show();
@@ -1845,6 +1863,7 @@ export default class RawClipboardExtension extends Extension {
         this._undoStack = [];
         this._inSearchMode = false;
         this._searchQuery = '';
+        this._loopArmDirection = null;
 
         try {
             // 1. 获取鼠标指针位置与显示器
@@ -2195,7 +2214,27 @@ export default class RawClipboardExtension extends Extension {
                         return Clutter.EVENT_STOP;
                     }
 
-                    // 循环翻页：第一页向上翻至末页，末页向下翻至第一页
+                    // 首尾循环翻页防误触：第一页向上翻至末页、或最后一页向下翻至第一页时，首次操作仅把页码变成 0/n，二次操作才执行翻页
+                    if (delta < 0 && this._currentPage === 0) {
+                        if (this._loopArmDirection !== 'up') {
+                            this._loopArmDirection = 'up';
+                            this._updatePageBadge();
+                            lastScrollTime = now;
+                            lastScrollDir = delta;
+                            return Clutter.EVENT_STOP;
+                        }
+                    } else if (delta > 0 && this._currentPage === totalPages - 1) {
+                        if (this._loopArmDirection !== 'down') {
+                            this._loopArmDirection = 'down';
+                            this._updatePageBadge();
+                            lastScrollTime = now;
+                            lastScrollDir = delta;
+                            return Clutter.EVENT_STOP;
+                        }
+                    }
+
+                    // 循环翻页执行（或常规单步翻页），并还原正常页码显示
+                    this._loopArmDirection = null;
                     const targetPage = (this._currentPage + delta + totalPages) % totalPages;
                     lastScrollTime = now;
                     lastScrollDir = delta;
@@ -2336,6 +2375,7 @@ export default class RawClipboardExtension extends Extension {
                 this._sortMode = 'queue';
                 this._inSearchMode = false;
                 this._searchQuery = '';
+                this._loopArmDirection = null;
             }
             this._isClosing = false;
         };
@@ -2353,6 +2393,7 @@ export default class RawClipboardExtension extends Extension {
     }
 
     _setPage(pageIndex, newSelectedIndex = null) {
+        this._loopArmDirection = null;
         const currentEntries = this._getSortedEntries();
         const totalPages = Math.max(1, Math.ceil(currentEntries.length / 8));
         if (pageIndex < 0 || pageIndex >= totalPages) return;
@@ -2820,11 +2861,20 @@ export default class RawClipboardExtension extends Extension {
         if (symbol === Clutter.KEY_Up) {
             if (totalCount > 0) {
                 if (this._selectedIndex > 0) {
+                    this._clearLoopArm();
                     this._setSelectedIndex(this._selectedIndex - 1);
                 } else if (this._currentPage > 0) {
+                    this._clearLoopArm();
                     const prevPageCount = 8;
                     this._setPage(this._currentPage - 1, prevPageCount - 1);
                 } else if (totalPages > 1) {
+                    // 第一页首项向上跨页至最后一页尾项：首次仅变 0/n，二次操作才执行翻页
+                    if (this._loopArmDirection !== 'up') {
+                        this._loopArmDirection = 'up';
+                        this._updatePageBadge();
+                        return Clutter.EVENT_STOP;
+                    }
+                    this._loopArmDirection = null;
                     const lastPage = totalPages - 1;
                     const lastPageCount = totalCount - lastPage * 8;
                     this._setPage(lastPage, lastPageCount - 1);
@@ -2837,10 +2887,19 @@ export default class RawClipboardExtension extends Extension {
         if (symbol === Clutter.KEY_Down) {
             if (totalCount > 0) {
                 if (this._selectedIndex < pageCount - 1) {
+                    this._clearLoopArm();
                     this._setSelectedIndex(this._selectedIndex + 1);
                 } else if (this._currentPage < totalPages - 1) {
+                    this._clearLoopArm();
                     this._setPage(this._currentPage + 1, 0);
                 } else if (totalPages > 1) {
+                    // 最后一页尾项向下跨页至第一页首项：首次仅变 0/n，二次操作才执行翻页
+                    if (this._loopArmDirection !== 'down') {
+                        this._loopArmDirection = 'down';
+                        this._updatePageBadge();
+                        return Clutter.EVENT_STOP;
+                    }
+                    this._loopArmDirection = null;
                     this._setPage(0, 0);
                 }
             }
@@ -2850,6 +2909,14 @@ export default class RawClipboardExtension extends Extension {
         // Left / PageUp: 翻至上一页 (循环翻页：第一页向上翻至末页)
         if (symbol === Clutter.KEY_Left || symbol === Clutter.KEY_Page_Up) {
             if (totalPages > 1) {
+                if (this._currentPage === 0) {
+                    if (this._loopArmDirection !== 'up') {
+                        this._loopArmDirection = 'up';
+                        this._updatePageBadge();
+                        return Clutter.EVENT_STOP;
+                    }
+                }
+                this._loopArmDirection = null;
                 const targetPage = (this._currentPage - 1 + totalPages) % totalPages;
                 this._setPage(targetPage, this._selectedIndex);
             }
@@ -2859,6 +2926,14 @@ export default class RawClipboardExtension extends Extension {
         // Right / PageDown: 翻至下一页 (循环翻页：末页向下翻至首页)
         if (symbol === Clutter.KEY_Right || symbol === Clutter.KEY_Page_Down) {
             if (totalPages > 1) {
+                if (this._currentPage === totalPages - 1) {
+                    if (this._loopArmDirection !== 'down') {
+                        this._loopArmDirection = 'down';
+                        this._updatePageBadge();
+                        return Clutter.EVENT_STOP;
+                    }
+                }
+                this._loopArmDirection = null;
                 const targetPage = (this._currentPage + 1) % totalPages;
                 this._setPage(targetPage, this._selectedIndex);
             }
