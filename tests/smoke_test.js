@@ -54,7 +54,7 @@ function generatePreview(type, mime, gBytes) {
         return { title: str, subtitle: `文本 · ${sizeStr}` };
     }
     if (type === 'composite') {
-        return { title: '富文本内容', subtitle: `复合类型 · ${sizeStr}` };
+        return { title: '富文本内容', subtitle: `多类型 · ${sizeStr}` };
     }
     if (type === 'image') return { title: `位图 (${sizeStr})`, subtitle: mime };
     if (type === 'files') {

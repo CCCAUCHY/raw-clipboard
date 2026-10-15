@@ -212,7 +212,7 @@ function generatePreview(type, mime, gBytes, unknownTypeName = null, lang = 'zh-
         const clean = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').replace(/\s+/g, ' ').trim();
         return {
             title: clean.length > 1000 ? `${clean.slice(0, 1000)}…` : (clean || (isEn ? '(Empty text)' : '(空文本)')),
-            subtitle: `${isEn ? 'Composite' : '复合类型'} · ${sizeStr}`,
+            subtitle: `${isEn ? 'Multi-type' : '多类型'} · ${sizeStr}`,
             icon: 'text-html-symbolic',
         };
     }
@@ -816,7 +816,7 @@ export default class RawClipboardExtension extends Extension {
         const isEn = this._getLanguage() === 'en-US';
         if (entry.type === 'composite') {
             const sizeStr = formatByteSize(entry.size);
-            const typeStr = isEn ? 'Composite' : '复合类型';
+            const typeStr = isEn ? 'Multi-type' : '多类型';
             return `${typeStr} · ${sizeStr}`;
         }
         if (!entry.type || entry.type === 'text' || entry.type === 'html') {

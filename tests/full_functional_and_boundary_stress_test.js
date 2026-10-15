@@ -4411,7 +4411,7 @@ await reporter.run('16.4 复合类型全生命周期捕获、文本预览提取�
 
     // 验证 UI 渲染与多语言
     ext._openPopup();
-    assert(ext._itemSlots[0].subLabel.text.includes('复合类型'), '中文状态副标题含 复合类型');
+    assert(ext._itemSlots[0].subLabel.text.includes('多类型'), '中文状态副标题含 多类型');
 
     // 验证搜索匹配
     ext._enterSearchMode('Agentic');
@@ -4422,7 +4422,7 @@ await reporter.run('16.4 复合类型全生命周期捕获、文本预览提取�
 
     // 切换至英文
     ext._settings.set_string('ui-language', 'en-US');
-    assert(ext._itemSlots[0].subLabel.text.includes('Composite'), '英文状态副标题含 Composite');
+    assert(ext._itemSlots[0].subLabel.text.includes('Multi-type'), '英文状态副标题含 Multi-type');
 
     ext._settings.set_string('ui-language', 'zh-CN');
     ext._closePopup();
