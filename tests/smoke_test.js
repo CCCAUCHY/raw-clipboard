@@ -20,14 +20,25 @@ function detectCoreMime(mimeTypes) {
         return { mime: fileMime, type: 'files', isKdeCut };
     }
 
-    // 3. 纯文本（包括用户与密码管理器复制的密码字符串、Token 等）
+    // 3. 复合类型 (多 MIME：如网页复制同时提供 text/html 和 text/plain 两种表示，保留富文本与纯文本双格式)
+    const hasHtml = mimeTypes.includes('text/html');
     const textMime = ['text/plain;charset=utf-8', 'text/plain', 'UTF8_STRING', 'STRING'].find(m => mimeTypes.includes(m));
+    if (hasHtml && textMime) {
+        return {
+            type: 'composite',
+            mime: 'composite',
+            htmlMime: 'text/html',
+            textMime: textMime,
+        };
+    }
+
+    // 4. 纯文本（包括用户与密码管理器复制的密码字符串、Token 等）
     if (textMime) return { mime: textMime, type: 'text' };
 
-    // 4. 富文本 HTML
-    if (mimeTypes.includes('text/html')) return { mime: 'text/html', type: 'html' };
+    // 5. 富文本 HTML
+    if (hasHtml) return { mime: 'text/html', type: 'html' };
 
-    // 5. 兜底其它任意合法的 Raw 二进制类型（包含 SVG 等矢量格式，仅保留纯数据，不主动解析预览）
+    // 6. 兜底其它任意合法的 Raw 二进制类型（包含 SVG 等矢量格式，仅保留纯数据，不主动解析预览）
     const valid = mimeTypes.filter(m => !m.startsWith('TARGETS') && !m.startsWith('TIMESTAMP') && !m.startsWith('MULTIPLE'));
     if (valid.length > 0) return { mime: valid[0], type: 'raw' };
 
@@ -41,6 +52,9 @@ function generatePreview(type, mime, gBytes) {
     if (type === 'text') {
         const str = Utf8Decoder.decode(gBytes.toArray().subarray(0, 100)).trim();
         return { title: str, subtitle: `文本 · ${sizeStr}` };
+    }
+    if (type === 'composite') {
+        return { title: '富文本内容', subtitle: `复合类型 · ${sizeStr}` };
     }
     if (type === 'image') return { title: `位图 (${sizeStr})`, subtitle: mime };
     if (type === 'files') {
@@ -60,6 +74,8 @@ async function runTests() {
         { mimes: ['text/plain', 'UTF8_STRING', 'STRING'], expected: 'text' },
         { mimes: ['image/png', 'image/bmp', 'text/plain'], expected: 'image' },
         { mimes: ['text/uri-list', 'text/plain'], expected: 'files' },
+        { mimes: ['text/html', 'text/plain'], expected: 'composite' },
+        { mimes: ['text/html'], expected: 'html' },
         { mimes: ['application/x-custom-type'], expected: 'raw' },
         // 密码管理器（KeePassXC、1Password、Bitwarden、KDE 等）附带 hint 时正常识别为纯文本
         { mimes: ['x-kde-passwordManagerHint', 'text/plain'], expected: 'text' },

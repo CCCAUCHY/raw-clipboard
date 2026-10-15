@@ -239,7 +239,16 @@ globalThis.global = {
 const extModule = await import('../extension.js');
 const RawClipboardExtension = extModule.default;
 const RESTORE_NONCE = extModule.RESTORE_NONCE;
-const { RadixRawTree, RadixNode, findLongestCommonPrefix, makeSliceBytes, formatTime } = extModule;
+const {
+    RadixRawTree,
+    RadixNode,
+    findLongestCommonPrefix,
+    makeSliceBytes,
+    formatTime,
+    packCompositeBytes,
+    unpackCompositeBytes,
+    detectCoreMime,
+} = extModule;
 
 // ============================================================================
 // 2. 测试工具类与框架
@@ -248,15 +257,34 @@ const { RadixRawTree, RadixNode, findLongestCommonPrefix, makeSliceBytes, format
 class MockSelectionSource {
     constructor(mimetypes, bytes) {
         this._mimetypes = mimetypes;
-        this._bytes = bytes instanceof GLib.Bytes ? bytes : new GLib.Bytes(bytes);
+        this._mimeMap = null;
+        if (bytes instanceof GLib.Bytes) {
+            this._bytes = bytes;
+        } else if (bytes instanceof Uint8Array) {
+            this._bytes = new GLib.Bytes(bytes);
+        } else if (typeof bytes === 'object' && bytes !== null && !ArrayBuffer.isView(bytes)) {
+            this._mimeMap = new Map();
+            for (const [k, v] of Object.entries(bytes)) {
+                this._mimeMap.set(k, v instanceof GLib.Bytes ? v : new GLib.Bytes(v));
+            }
+            this._bytes = null;
+        } else {
+            this._bytes = new GLib.Bytes(bytes || new Uint8Array(0));
+        }
     }
 
     get_mimetypes() {
         return this._mimetypes;
     }
 
-    async read_async(_mime, _cancellable) {
-        return Gio.MemoryInputStream.new_from_bytes(this._bytes);
+    async read_async(mime, _cancellable) {
+        if (this._mimeMap && this._mimeMap.has(mime)) {
+            return Gio.MemoryInputStream.new_from_bytes(this._mimeMap.get(mime));
+        }
+        if (this._bytes) {
+            return Gio.MemoryInputStream.new_from_bytes(this._bytes);
+        }
+        return Gio.MemoryInputStream.new_from_bytes(new GLib.Bytes(new Uint8Array(0)));
     }
 }
 
@@ -4267,6 +4295,222 @@ await reporter.run('15.5 右键菜单多语言切换测试 (中文“带入搜�
     // 还原
     ext._settings.set_string('ui-language', 'zh-CN');
     ext._closePopup();
+    ext.disable();
+});
+
+// ============================================================================
+// [测试套件 16] 16. 多 MIME 复合类型 (Composite Type) 深度与边界测试
+// ============================================================================
+reporter.suite('16. 多 MIME 复合类型 (Composite Type) 深度与边界测试');
+
+await reporter.run('16.1 网页/办公软件多 MIME 场景探测识别 (text/html + text/plain 识别为 composite，单一格式保持原样)', async () => {
+    // 1. 经典浏览器/网页复制场景 (含 text/html 与 UTF8 纯文本)
+    const webMimes = ['text/html', 'text/plain;charset=utf-8', 'UTF8_STRING', 'STRING'];
+    const detectedWeb = detectCoreMime(webMimes);
+    assert(detectedWeb.type === 'composite', '多 MIME (html+plain) 应精准识别为 composite');
+    assert(detectedWeb.mime === 'composite', 'composite 类型的核心 MIME 声明为 composite');
+    assert(detectedWeb.htmlMime === 'text/html', '正确提取 htmlMime');
+    assert(detectedWeb.textMime === 'text/plain;charset=utf-8', '优先提取 utf-8 textMime');
+
+    // 2. 单一富文本或纯文本不应误判为 composite
+    const singleHtml = detectCoreMime(['text/html']);
+    assert(singleHtml.type === 'html' && singleHtml.mime === 'text/html', '单一 html 不应误判为 composite');
+
+    const singleText = detectCoreMime(['text/plain', 'UTF8_STRING']);
+    assert(singleText.type === 'text' && singleText.mime === 'text/plain', '单一 text 不应误判为 composite');
+
+    // 3. 优先级校验：若包含位图或文件，位图/文件依然保持更高优先级
+    const imgWithHtml = detectCoreMime(['image/png', 'text/html', 'text/plain']);
+    assert(imgWithHtml.type === 'image', '位图优先于 composite');
+});
+
+await reporter.run('16.2 CMP1 纯内存二进制容器打包与解包 (无损双向转换与异常数据容错保护)', async () => {
+    const encoder = new TextEncoder();
+    const decoder = new TextDecoder();
+
+    const htmlContent = '<h1>Header</h1><p>Paragraph with <b>bold</b> text.</p>';
+    const textContent = 'Header\nParagraph with bold text.';
+
+    const originalParts = [
+        { mime: 'text/html', bytes: new GLib.Bytes(encoder.encode(htmlContent)) },
+        { mime: 'text/plain;charset=utf-8', bytes: new GLib.Bytes(encoder.encode(textContent)) },
+    ];
+
+    // 打包
+    const packedBytes = packCompositeBytes(originalParts);
+    assert(packedBytes.get_size() > 6, '打包后的二进制数据应包含头部魔数与部件内容');
+
+    // 解包
+    const unpacked = unpackCompositeBytes(packedBytes);
+    assert(unpacked.length === 2, '解包还原后的部件数量应为 2');
+    assert(unpacked[0].mime === 'text/html', '部件 0 MIME 吻合');
+    assert(decoder.decode(unpacked[0].bytes.toArray()) === htmlContent, '部件 0 字节内容 100% 吻合');
+    assert(unpacked[1].mime === 'text/plain;charset=utf-8', '部件 1 MIME 吻合');
+    assert(decoder.decode(unpacked[1].bytes.toArray()) === textContent, '部件 1 字节内容 100% 吻合');
+
+    // 边界与异常容错测试：畸变魔数或截断数据
+    assert(unpackCompositeBytes(null).length === 0, 'null 载荷解包返回空数组');
+    assert(unpackCompositeBytes(new GLib.Bytes(new Uint8Array([1, 2, 3]))).length === 0, '长度不足返回空数组');
+    assert(unpackCompositeBytes(new GLib.Bytes(new Uint8Array([0x00, 0x00, 0x00, 0x00, 0x00, 0x00]))).length === 0, '魔数不匹配安全返回空数组');
+});
+
+await reporter.run('16.3 复合类型专用 RadixRawTree 存储树验证 (专属 composite 树根、前缀复用与 100% 字节去重)', async () => {
+    const tree = new RadixRawTree();
+    const encoder = new TextEncoder();
+
+    const partA1 = { mime: 'text/html', bytes: new GLib.Bytes(encoder.encode('<b>Item 1</b>')) };
+    const partA2 = { mime: 'text/plain', bytes: new GLib.Bytes(encoder.encode('Item 1')) };
+    const bytesA = packCompositeBytes([partA1, partA2]);
+
+    // 1. 首次插入
+    const res1 = tree.insert('composite', bytesA, _leaf => ({ id: 1, type: 'composite' }));
+    assert(res1.isDuplicate === false, '首次插入不应被判定为重复');
+    assert(tree.hasRoot('composite') === true, 'RadixRawTree 应具有专属 composite 根节点');
+
+    // 2. 重复插入完全一致的复合数据
+    const res2 = tree.insert('composite', bytesA, _leaf => ({ id: 2, type: 'composite' }));
+    assert(res2.isDuplicate === true, '完全相同的复合二进制载荷应判定为 100% 重复');
+    assert(res2.existingEntry.id === 1, '命中已有复合条目');
+
+    // 3. 插入具有公共 CMP1 前缀但内容不同的条目 (验证前缀分裂与共享节点)
+    const partB1 = { mime: 'text/html', bytes: new GLib.Bytes(encoder.encode('<b>Item 2</b>')) };
+    const partB2 = { mime: 'text/plain', bytes: new GLib.Bytes(encoder.encode('Item 2')) };
+    const bytesB = packCompositeBytes([partB1, partB2]);
+
+    const res3 = tree.insert('composite', bytesB, _leaf => ({ id: 3, type: 'composite' }));
+    assert(res3.isDuplicate === false, '不同内容的复合条目成功挂载');
+    const root = tree.getRoot('composite');
+    assert(root.children.size > 0, '专属 composite 树根节点维护分支');
+});
+
+await reporter.run('16.4 复合类型全生命周期捕获、文本预览提取与中英多语言渲染测试', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    const htmlData = new TextEncoder().encode('<p>Google <b>Deepmind</b> Agentic</p>');
+    const textData = new TextEncoder().encode('Google Deepmind Agentic');
+
+    const multiSource = new MockSelectionSource(
+        ['text/html', 'text/plain;charset=utf-8'],
+        {
+            'text/html': htmlData,
+            'text/plain;charset=utf-8': textData,
+        }
+    );
+
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, multiSource);
+
+    const entries = ext._getVisibleEntries();
+    assert(entries.length === 1, '成功捕获并暂存 1 条记录');
+    const entry = entries[0];
+    assert(entry.type === 'composite', '条目类型为 composite');
+    assert(entry.mime === 'composite', '条目核心 MIME 为 composite');
+    assert(entry.preview.includes('Google Deepmind Agentic'), '预览文字优先提取纯文本内容');
+    assert(entry.htmlBytes !== null, '可按需提取原始 htmlBytes');
+    assert(entry.textBytes !== null, '可按需提取原始 textBytes');
+
+    // 验证 UI 渲染与多语言
+    ext._openPopup();
+    assert(ext._itemSlots[0].subLabel.text.includes('复合类型'), '中文状态副标题含 复合类型');
+
+    // 验证搜索匹配
+    ext._enterSearchMode('Agentic');
+    assert(ext._getSortedEntries().length === 1, '搜索 Agentic 成功匹配复合类型');
+    ext._enterSearchMode('NonExistentKeywordXYZ');
+    assert(ext._getSortedEntries().length === 0, '不匹配时过滤结果为空');
+    ext._exitSearchMode();
+
+    // 切换至英文
+    ext._settings.set_string('ui-language', 'en-US');
+    assert(ext._itemSlots[0].subLabel.text.includes('Composite'), '英文状态副标题含 Composite');
+
+    ext._settings.set_string('ui-language', 'zh-CN');
+    ext._closePopup();
+    ext.disable();
+});
+
+await reporter.run('16.5 复合类型右键菜单操作与“复制文本”测试 (带入搜索、文本提取入库与系统剪贴板注入)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    const htmlData = new TextEncoder().encode('<a href="https://example.com">Visit <b>Site</b></a>');
+    const textData = new TextEncoder().encode('Visit Site');
+
+    const multiSource = new MockSelectionSource(
+        ['text/html', 'text/plain'],
+        {
+            'text/html': htmlData,
+            'text/plain': textData,
+        }
+    );
+
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, multiSource);
+
+    ext._openPopup();
+    // 右键复合条目
+    ext._itemSlots[0].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [120, 120] });
+    assert(ext._contextMenu !== null, '复合条目成功呼出右键菜单');
+    const menuItems = ext._contextMenu.get_children();
+    assert(menuItems.length === 2, '复合类型包含 2 个右键操作项 (带入搜索与复制文本)');
+
+    // 1. 点击“带入搜索”
+    const searchBtn = menuItems[0];
+    searchBtn.emit('button-press-event', { get_button: () => 1 });
+    assert(ext._inSearchMode === true, '带入搜索成功激活搜索模式');
+    assert(ext._searchQuery === 'Visit Site', '搜索框内容覆盖带入前缀纯文本');
+    ext._exitSearchMode();
+
+    // 2. 重新右键并点击“复制文本”
+    ext._itemSlots[0].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [120, 120] });
+    const copyBtn = ext._contextMenu.get_children()[1];
+    copyBtn.emit('button-press-event', { get_button: () => 1 });
+
+    // 验证：队首生成纯文本记录且注入剪贴板
+    const entries = ext._getVisibleEntries();
+    assert(entries.length === 2, '队首新增 1 条独立纯文本条目，总计 2 条');
+    const headEntry = entries[0];
+    assert(headEntry.type === 'text', '新条目类型为 text');
+    const decodedHead = new TextDecoder().decode(headEntry.bytes.toArray());
+    assert(decodedHead === 'Visit Site', `队首纯文本与提取内容严格一致，实际: ${decodedHead}`);
+
+    ext._closePopup();
+    ext.disable();
+});
+
+await reporter.run('16.6 复合类型原样富文本回灌测试 (优先回灌 text/html 保持富文本排版格式，挂载防回环 nonce)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    const htmlPayload = '<div style="color:red;"><b>Styled Rich Text</b></div>';
+    const textPayload = 'Styled Rich Text';
+
+    const multiSource = new MockSelectionSource(
+        ['text/html', 'text/plain'],
+        {
+            'text/html': new TextEncoder().encode(htmlPayload),
+            'text/plain': new TextEncoder().encode(textPayload),
+        }
+    );
+
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, multiSource);
+
+    const entries = ext._getVisibleEntries();
+    assert(entries.length === 1, '暂存复合条目');
+
+    // 清理 globalThis._lastOwnedSource 便于验证
+    globalThis._lastOwnedSource = null;
+
+    // 回灌该条目
+    ext._openPopup();
+    ext._setSelectedIndex(0);
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Return });
+
+    // 检查回灌写回的剪贴板源
+    const restoredSource = globalThis._lastOwnedSource;
+    assert(restoredSource !== null, '已调用 set_owner 写回剪贴板源');
+    assert(restoredSource.get_mimetypes()[0] === 'text/html', '复合类型回灌时 MIME 必须为 text/html 以保证富文本格式原样还原');
+    assert(typeof restoredSource[RESTORE_NONCE] === 'string', '回灌源挂载了防回环一次性 RESTORE_NONCE');
+
     ext.disable();
 });
 

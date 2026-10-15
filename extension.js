@@ -121,7 +121,7 @@ export const MAX_SEARCH_IMPORT_LEN = 64;
 
 // 核心 MIME 检测规则
 // 纯内存暂存：不屏蔽密码等类型，保留原始字节流
-function detectCoreMime(mimeTypes) {
+export function detectCoreMime(mimeTypes) {
     if (!mimeTypes || mimeTypes.length === 0) return null;
 
     // 1. 位图图片类（仅常见位图支持缩略图预览；SVG 等矢量格式作为 raw 类型仅保留原始数据）
@@ -138,18 +138,29 @@ function detectCoreMime(mimeTypes) {
         return { mime: fileMime, type: 'files', isKdeCut };
     }
 
-    // 3. 纯文本（包括用户与密码管理器复制的密码字符串、Token 等）
+    // 3. 复合类型 (多 MIME：如网页复制同时提供 text/html 和 text/plain 两种表示，保留富文本与纯文本双格式)
+    const hasHtml = mimeTypes.includes('text/html');
     const textMime = ['text/plain;charset=utf-8', 'text/plain', 'UTF8_STRING', 'STRING'].find(m => mimeTypes.includes(m));
+    if (hasHtml && textMime) {
+        return {
+            type: 'composite',
+            mime: 'composite',
+            htmlMime: 'text/html',
+            textMime: textMime,
+        };
+    }
+
+    // 4. 单一纯文本（包括用户与密码管理器复制的密码字符串、Token 等）
     if (textMime) {
         return { mime: textMime, type: 'text' };
     }
 
-    // 4. 富文本 HTML
-    if (mimeTypes.includes('text/html')) {
+    // 5. 单一富文本 HTML
+    if (hasHtml) {
         return { mime: 'text/html', type: 'html' };
     }
 
-    // 5. 兜底其它任意合法的 Raw 二进制类型（包含 SVG 等矢量格式，仅保留纯数据，不主动解析预览）
+    // 6. 兜底其它任意合法的 Raw 二进制类型（包含 SVG 等矢量格式，仅保留纯数据，不主动解析预览）
     const valid = mimeTypes.filter(m => !m.startsWith('TARGETS') && !m.startsWith('TIMESTAMP') && !m.startsWith('MULTIPLE'));
     if (valid.length > 0) {
         return { mime: valid[0], type: 'raw' };
@@ -165,10 +176,46 @@ function detectCoreMime(mimeTypes) {
 // 3. 我们只维护有限的类型预览（文本、富文本、文件列表、位图）；
 // 4. 其他未知类型只显示类型本身（mime），不显示预览；
 // 5. 且只有位图能以缩略图形式预览。
-function generatePreview(type, mime, gBytes, unknownTypeName = null, lang = 'zh-CN') {
+function generatePreview(type, mime, gBytes, unknownTypeName = null, lang = 'zh-CN', extra = null) {
     const size = gBytes.get_size();
     const sizeStr = formatByteSize(size);
     const isEn = lang === 'en-US';
+
+    // 0. 复合类型 (多 MIME：优先提取纯文本流进行文本预览，保留富文本与纯文本双格式)
+    if (type === 'composite') {
+        let text = '';
+        if (extra && extra.textBytes) {
+            try {
+                const data = extra.textBytes.get_data ? extra.textBytes.get_data() : extra.textBytes.toArray();
+                text = Utf8Decoder.decode(data);
+            } catch (_) {}
+        }
+        if (!text) {
+            const parts = unpackCompositeBytes(gBytes);
+            const textPart = parts.find(p => p.mime.startsWith('text/plain') || p.mime.includes('STRING'));
+            if (textPart) {
+                try {
+                    const data = textPart.bytes.get_data ? textPart.bytes.get_data() : textPart.bytes.toArray();
+                    text = Utf8Decoder.decode(data);
+                } catch (_) {}
+            } else {
+                const htmlPart = parts.find(p => p.mime === 'text/html');
+                if (htmlPart) {
+                    try {
+                        const data = htmlPart.bytes.get_data ? htmlPart.bytes.get_data() : htmlPart.bytes.toArray();
+                        const raw = Utf8Decoder.decode(data);
+                        text = raw.replace(/<[^>]+>/g, ' ');
+                    } catch (_) {}
+                }
+            }
+        }
+        const clean = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').replace(/\s+/g, ' ').trim();
+        return {
+            title: clean.length > 1000 ? `${clean.slice(0, 1000)}…` : (clean || (isEn ? '(Empty text)' : '(空文本)')),
+            subtitle: `${isEn ? 'Composite' : '复合类型'} · ${sizeStr}`,
+            icon: 'text-html-symbolic',
+        };
+    }
 
     // 1. 文本类 (纯文本、富文本 HTML 等)：通过 Gio.MemoryInputStream 零拷贝流按需读取
     // 准则：只要能以文本形式显示，就提取前缀文本作为预览；若全是控制字符/乱码无法以文本形式显示，则只显示类型本身
@@ -387,6 +434,67 @@ export function makeSliceBytes(sourceBytes, uData, offset, len) {
     return new GLib.Bytes(uData.slice(offset, offset + len));
 }
 
+/**
+ * 将多 MIME 复合部件打包为自包含的确定性二进制数据流 (CMP1 容器格式)
+ * 完全在内存中构建，不落地磁盘、无进程调用
+ */
+export function packCompositeBytes(parts) {
+    const encoder = new TextEncoder();
+    const out = Gio.MemoryOutputStream.new_resizable();
+    // Magic: CMP1 (4 字节: 0x43, 0x4D, 0x50, 0x31)
+    const magic = new Uint8Array([0x43, 0x4D, 0x50, 0x31]);
+    out.write_bytes(new GLib.Bytes(magic), null);
+    const countBuf = new Uint8Array(2);
+    new DataView(countBuf.buffer).setUint16(0, parts.length, false);
+    out.write_bytes(new GLib.Bytes(countBuf), null);
+
+    for (const part of parts) {
+        const mimeBytes = encoder.encode(part.mime);
+        const header = new Uint8Array(6);
+        const dv = new DataView(header.buffer);
+        dv.setUint16(0, mimeBytes.length, false);
+        dv.setUint32(2, part.bytes.get_size(), false);
+
+        out.write_bytes(new GLib.Bytes(header.subarray(0, 2)), null);
+        out.write_bytes(new GLib.Bytes(mimeBytes), null);
+        out.write_bytes(new GLib.Bytes(header.subarray(2, 6)), null);
+        out.write_bytes(part.bytes, null);
+    }
+    out.close(null);
+    return out.steal_as_bytes();
+}
+
+/**
+ * 从自包含二进制 CMP1 容器流解析还原多 MIME 复合部件列表
+ */
+export function unpackCompositeBytes(gBytes) {
+    if (!gBytes || gBytes.get_size() < 6) return [];
+    const uData = gBytes.get_data();
+    if (uData[0] !== 0x43 || uData[1] !== 0x4D || uData[2] !== 0x50 || uData[3] !== 0x31) {
+        return [];
+    }
+    const dv = new DataView(uData.buffer, uData.byteOffset, uData.byteLength);
+    const count = dv.getUint16(4, false);
+    let offset = 6;
+    const parts = [];
+    for (let i = 0; i < count; i++) {
+        if (offset + 2 > uData.length) break;
+        const mimeLen = dv.getUint16(offset, false);
+        offset += 2;
+        if (offset + mimeLen > uData.length) break;
+        const mime = Utf8Decoder.decode(uData.subarray(offset, offset + mimeLen));
+        offset += mimeLen;
+        if (offset + 4 > uData.length) break;
+        const dataLen = dv.getUint32(offset, false);
+        offset += 4;
+        if (offset + dataLen > uData.length) break;
+        const partBytes = makeSliceBytes(gBytes, uData, offset, dataLen);
+        offset += dataLen;
+        parts.push({ mime, bytes: partBytes });
+    }
+    return parts;
+}
+
 export class RadixNode {
     constructor(bytes = null, parent = null) {
         this.bytes = bytes;
@@ -592,12 +700,40 @@ export default class RawClipboardExtension extends Extension {
 
     _isTextPreviewable(entry) {
         if (!entry) return false;
-        return entry.type === 'text' || entry.type === 'html' || entry.type === 'files';
+        return entry.type === 'text' || entry.type === 'html' || entry.type === 'files' || entry.type === 'composite';
     }
 
     // 提取条目的纯文本形式 (用于“复制文本”注入剪贴板与历史入库)
     _extractTextForm(entry) {
         if (!entry) return '';
+        if (entry.type === 'composite') {
+            if (entry.textBytes) {
+                try {
+                    const data = entry.textBytes.get_data ? entry.textBytes.get_data() : entry.textBytes.toArray();
+                    const s = Utf8Decoder.decode(data);
+                    const clean = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim();
+                    if (clean) return clean;
+                } catch (_) {}
+            }
+            if (entry.htmlBytes) {
+                try {
+                    const data = entry.htmlBytes.get_data ? entry.htmlBytes.get_data() : entry.htmlBytes.toArray();
+                    const raw = Utf8Decoder.decode(data);
+                    let s = raw.replace(/<br\s*\/?>/gi, '\n')
+                               .replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n')
+                               .replace(/<[^>]+>/g, '')
+                               .replace(/&nbsp;/gi, ' ')
+                               .replace(/&amp;/gi, '&')
+                               .replace(/&lt;/gi, '<')
+                               .replace(/&gt;/gi, '>')
+                               .replace(/&quot;/gi, '"')
+                               .replace(/&#39;/gi, "'");
+                    const clean = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim();
+                    if (clean) return clean;
+                } catch (_) {}
+            }
+            return entry.preview || '';
+        }
         if (entry.type === 'text') {
             try {
                 const data = entry.bytes.get_data ? entry.bytes.get_data() : entry.bytes.toArray();
@@ -678,6 +814,11 @@ export default class RawClipboardExtension extends Extension {
     _getEntrySubtitle(entry) {
         if (!entry) return '';
         const isEn = this._getLanguage() === 'en-US';
+        if (entry.type === 'composite') {
+            const sizeStr = formatByteSize(entry.size);
+            const typeStr = isEn ? 'Composite' : '复合类型';
+            return `${typeStr} · ${sizeStr}`;
+        }
         if (!entry.type || entry.type === 'text' || entry.type === 'html') {
             const sizeStr = formatByteSize(entry.size);
             const typeStr = entry.type === 'html' ? (isEn ? 'HTML' : '富文本') : (isEn ? 'Text' : '文本');
@@ -868,7 +1009,7 @@ export default class RawClipboardExtension extends Extension {
                 return orderMap.get(a) - orderMap.get(b);
             });
         } else if (this._sortMode === 'type') {
-            const typeRank = { 'text': 1, 'html': 2, 'files': 3, 'image': 4, 'raw': 5 };
+            const typeRank = { 'text': 1, 'composite': 2, 'html': 3, 'files': 4, 'image': 5, 'raw': 6 };
             copy.sort((a, b) => {
                 const rankA = typeRank[a.type] || 99;
                 const rankB = typeRank[b.type] || 99;
@@ -1393,6 +1534,53 @@ export default class RawClipboardExtension extends Extension {
         });
     }
 
+    async _readMimeStream(selectionSource, mime, readCancellable, resetWatchdog, maxPayloadBytes, currentTotalRead = 0) {
+        let inputStream = null;
+        let outputStream = null;
+        let isOversized = false;
+        try {
+            inputStream = await callAsync(selectionSource, 'read_async', 'read_finish', mime, readCancellable);
+            resetWatchdog();
+
+            outputStream = Gio.MemoryOutputStream.new_resizable();
+            const CHUNK_SIZE = 64 * 1024;
+            let totalRead = currentTotalRead;
+
+            while (true) {
+                if (readCancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) break;
+
+                const bytes = await callAsync(inputStream, 'read_bytes_async', 'read_bytes_finish', CHUNK_SIZE, GLib.PRIORITY_DEFAULT, readCancellable);
+                const chunkSize = bytes.get_size();
+                if (chunkSize === 0) break; // EOF
+
+                totalRead += chunkSize;
+                this._debug(`[RawClipboard] 收到数据块 (${mime}): ${chunkSize} 字节，累计已读: ${totalRead} 字节`);
+                if (totalRead > maxPayloadBytes) {
+                    isOversized = true;
+                    readCancellable.cancel();
+                    break;
+                }
+
+                outputStream.write_bytes(bytes, null);
+                resetWatchdog();
+            }
+
+            if (isOversized) {
+                return { isOversized: true, bytes: null };
+            }
+
+            outputStream.close(null);
+            return { isOversized: false, bytes: outputStream.steal_as_bytes() };
+        } finally {
+            if (inputStream) {
+                try { inputStream.close(null); } catch (_) {}
+            }
+            if (outputStream && !outputStream.is_closed()) {
+                try { outputStream.close(null); } catch (_) {}
+            }
+        }
+    }
+
     async _onClipboardOwnerChanged(_selection, selectionType, selectionSource) {
         if (selectionType !== Meta.SelectionType.SELECTION_CLIPBOARD) return;
         const copyTime = Date.now();
@@ -1442,8 +1630,6 @@ export default class RawClipboardExtension extends Extension {
         let watchdogId = 0;
         let overallTimeoutId = 0;
         let overallSettingsChangedId = 0;
-        let inputStream = null;
-        let outputStream = null;
         const overallStartTime = Date.now();
 
         try {
@@ -1541,55 +1727,65 @@ export default class RawClipboardExtension extends Extension {
             this._debug(`[RawClipboard] 匹配核心目标类型: ${core.mime} (归类: ${core.type})`);
 
             // 动态读取单条数据上限（MB），支持从 5MB 到 1024MB（最大 1GB）
+            // 动态读取单条数据上限（MB），支持从 5MB 到 1024MB（最大 1GB）
             const maxMb = this._settings ? this._settings.get_int('max-size-mb') : 50;
             const maxPayloadBytes = Math.max(5, Math.min(1024, maxMb)) * 1024 * 1024;
 
-            // 分块流式异步读取：
-            // 每次拉取 64KB，在读循环中仅执行纯流式泵入，彻底消除 toArray() 深拷贝与逐块 FFI 计算开销
-            this._debug(`[RawClipboard] 开始异步拉取数据流 (${core.mime}, 单条上限: ${maxMb}MB, 停滞超时: ${inactivityTimeoutMs}ms, 总超时: ${overallTimeoutMs}ms)...`);
-            inputStream = await callAsync(selectionSource, 'read_async', 'read_finish', core.mime, readCancellable);
-            resetWatchdog();
+            let gBytes = null;
+            let size = 0;
+            let compositeTextBytes = null;
+            let compositeHtmlBytes = null;
+            let compositeParts = null;
 
-            outputStream = Gio.MemoryOutputStream.new_resizable();
-            const CHUNK_SIZE = 64 * 1024;
-            let totalRead = 0;
-            let isOversized = false;
+            if (core.type === 'composite') {
+                this._debug(`[RawClipboard] 开始异步拉取复合类型数据流 (${core.htmlMime} + ${core.textMime}, 单条上限: ${maxMb}MB)...`);
+                const htmlRes = await this._readMimeStream(selectionSource, core.htmlMime, readCancellable, resetWatchdog, maxPayloadBytes, 0);
+                if (htmlRes.isOversized) {
+                    this._warn(`[RawClipboard] 提前熔断拦截超限剪贴板数据 (已超过上限 ${maxMb} MB)`);
+                    return;
+                }
+                const htmlBytes = htmlRes.bytes;
+                if (!htmlBytes || htmlBytes.get_size() === 0) return;
 
-            while (true) {
-                if (readCancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) break;
+                const textRes = await this._readMimeStream(selectionSource, core.textMime, readCancellable, resetWatchdog, maxPayloadBytes, htmlBytes.get_size());
+                if (textRes.isOversized) {
+                    this._warn(`[RawClipboard] 提前熔断拦截超限剪贴板数据 (已超过上限 ${maxMb} MB)`);
+                    return;
+                }
+                const textBytes = textRes.bytes || new GLib.Bytes(new Uint8Array(0));
 
-                const bytes = await callAsync(inputStream, 'read_bytes_async', 'read_bytes_finish', CHUNK_SIZE, GLib.PRIORITY_DEFAULT, readCancellable);
-                const chunkSize = bytes.get_size();
-                if (chunkSize === 0) break; // EOF
-
-                totalRead += chunkSize;
-                this._debug(`[RawClipboard] 收到数据块: ${chunkSize} 字节，累计已读: ${totalRead} 字节`);
-                if (totalRead > maxPayloadBytes) {
-                    isOversized = true;
-                    readCancellable.cancel(); // 显式下发中断信号，立刻切断底层管道对端数据泵送
-                    break; // 触发前置熔断拦截
+                if (readCancellable.is_cancelled() || !this._cancellable || this._cancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) {
+                    this._log('[RawClipboard] 读取守卫命中（停滞超时/总耗时超限/所有者易手），彻底丢弃数据不入库');
+                    return;
                 }
 
-                outputStream.write_bytes(bytes, null);
-                resetWatchdog();
+                compositeHtmlBytes = htmlBytes;
+                compositeTextBytes = textBytes;
+                compositeParts = [
+                    { mime: core.htmlMime, bytes: htmlBytes },
+                    { mime: core.textMime, bytes: textBytes },
+                ];
+                gBytes = packCompositeBytes(compositeParts);
+                size = htmlBytes.get_size() + textBytes.get_size();
+            } else {
+                this._debug(`[RawClipboard] 开始异步拉取数据流 (${core.mime}, 单条上限: ${maxMb}MB, 停滞超时: ${inactivityTimeoutMs}ms, 总超时: ${overallTimeoutMs}ms)...`);
+                const res = await this._readMimeStream(selectionSource, core.mime, readCancellable, resetWatchdog, maxPayloadBytes, 0);
+                if (res.isOversized) {
+                    this._warn(`[RawClipboard] 提前熔断拦截超限剪贴板数据 (已超过上限 ${maxMb} MB)`);
+                    return;
+                }
+
+                if (readCancellable.is_cancelled() || !this._cancellable || this._cancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) {
+                    this._log('[RawClipboard] 读取守卫命中（停滞超时/总耗时超限/所有者易手），彻底丢弃数据不入库');
+                    return;
+                }
+
+                gBytes = res.bytes;
+                if (!gBytes || gBytes.get_size() === 0) return;
+                size = gBytes.get_size();
             }
 
-            if (isOversized) {
-                this._warn(`[RawClipboard] 提前熔断拦截超限剪贴板数据 (已超过上限 ${maxMb} MB)`);
-                return;
-            }
-
-            // 三重守卫最终核验：任何一项条件触发导致被取消、超时或已被新 owner 抢占，彻底丢弃数据！
-            if (readCancellable.is_cancelled() || !this._cancellable || this._cancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) {
-                this._log('[RawClipboard] 读取守卫命中（停滞超时/总耗时超限/所有者易手），彻底丢弃数据不入库');
-                return;
-            }
-
-            outputStream.close(null);
-            let gBytes = outputStream.steal_as_bytes();
-            const size = gBytes.get_size();
             this._debug(`[RawClipboard] 数据流读取完毕，总大小: ${size} 字节`);
-            if (size === 0) return;
 
             // 严格识别与拦截“剪切文件”操作 (Cut Files Filter)：
             // 剪切文件（Ctrl+X）在粘贴后源文件即被物理移动，无法重复回放，故严格禁止进入历史队列
@@ -1624,10 +1820,16 @@ export default class RawClipboardExtension extends Extension {
             this._debug(`[RawClipboard] 将数据投递至存储查重内核 (MIME: ${core.mime}, 大小: ${size} 字节)...`);
             const unknownLabel = (core.type === 'raw') ? this._getUnknownTypeName(core.mime) : null;
             const insertResult = this.#radixTree.insert(core.mime, gBytes, leafNode => {
-                const previewInfo = generatePreview(core.type, core.mime, gBytes, unknownLabel, this._getLanguage());
+                const previewInfo = generatePreview(core.type, core.mime, gBytes, unknownLabel, this._getLanguage(), {
+                    textBytes: compositeTextBytes,
+                    htmlBytes: compositeHtmlBytes,
+                });
                 let cachedThumb = undefined;
                 let assembledBytes = (leafNode.collectPathSegments().length === 1 ? leafNode.bytes : null);
                 let cachedChecksum = null;
+                let cachedHtmlBytes = compositeHtmlBytes;
+                let cachedTextBytes = compositeTextBytes;
+                let cachedParts = compositeParts;
                 const thisRef = this;
                 let entryTime = copyTime;
 
@@ -1660,6 +1862,30 @@ export default class RawClipboardExtension extends Extension {
                             cachedChecksum = GLib.compute_checksum_for_bytes(GLib.ChecksumType.MD5, this.bytes);
                         }
                         return cachedChecksum;
+                    },
+                    get parts() {
+                        if (!cachedParts) {
+                            if (core.type === 'composite') {
+                                cachedParts = unpackCompositeBytes(this.bytes);
+                            } else {
+                                cachedParts = [{ mime: core.mime, bytes: this.bytes }];
+                            }
+                        }
+                        return cachedParts;
+                    },
+                    get htmlBytes() {
+                        if (!cachedHtmlBytes && core.type === 'composite') {
+                            const p = this.parts.find(x => x.mime === 'text/html');
+                            cachedHtmlBytes = p ? p.bytes : null;
+                        }
+                        return cachedHtmlBytes;
+                    },
+                    get textBytes() {
+                        if (!cachedTextBytes && core.type === 'composite') {
+                            const p = this.parts.find(x => x.mime.startsWith('text/plain') || x.mime.includes('STRING'));
+                            cachedTextBytes = p ? p.bytes : null;
+                        }
+                        return cachedTextBytes;
                     },
                     get thumbIcon() {
                         if (cachedThumb === undefined) {
@@ -1760,12 +1986,6 @@ export default class RawClipboardExtension extends Extension {
             if (this._currentReadCancellable === readCancellable) {
                 this._currentReadCancellable = null;
             }
-            if (inputStream) {
-                try { inputStream.close(null); } catch (_) {}
-            }
-            if (outputStream) {
-                try { outputStream.close(null); } catch (_) {}
-            }
         }
     }
 
@@ -1861,12 +2081,24 @@ export default class RawClipboardExtension extends Extension {
             this._isRestoring = true;
             try {
                 let source = null;
-                // 保持原始捕获的 MIME 声明原样回灌，不额外追加参数
-                const mime = entry.mime;
+                // 保持原始捕获的 MIME 声明原样回灌
+                let mime = entry.mime;
+                let contentBytes = entry.bytes;
+
+                if (entry.type === 'composite') {
+                    // 回灌复合类型：原样保留富文本核心格式 (text/html) 回灌系统剪贴板
+                    if (entry.htmlBytes) {
+                        mime = 'text/html';
+                        contentBytes = entry.htmlBytes;
+                    } else if (entry.parts && entry.parts.length > 0) {
+                        mime = entry.parts[0].mime;
+                        contentBytes = entry.parts[0].bytes;
+                    }
+                }
 
                 if (Meta && Meta.SelectionSourceMemory && typeof Meta.SelectionSourceMemory.new === 'function') {
                     try {
-                        source = Meta.SelectionSourceMemory.new(mime, entry.bytes);
+                        source = Meta.SelectionSourceMemory.new(mime, contentBytes);
                     } catch (_e) {}
                 }
 
@@ -1876,11 +2108,11 @@ export default class RawClipboardExtension extends Extension {
                         this._selection.set_owner(Meta.SelectionType.SELECTION_CLIPBOARD, source);
                     } else {
                         const clipboard = St.Clipboard.get_default();
-                        clipboard.set_content(St.ClipboardType.CLIPBOARD, mime, entry.bytes);
+                        clipboard.set_content(St.ClipboardType.CLIPBOARD, mime, contentBytes);
                     }
                 } else {
                     const clipboard = St.Clipboard.get_default();
-                    clipboard.set_content(St.ClipboardType.CLIPBOARD, mime, entry.bytes);
+                    clipboard.set_content(St.ClipboardType.CLIPBOARD, mime, contentBytes);
                 }
                 this._debug('[RawClipboard] 成功写回系统剪贴板并挂载防回环标识');
             } finally {
