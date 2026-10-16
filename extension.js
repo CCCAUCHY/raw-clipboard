@@ -124,8 +124,8 @@ export const MAX_SEARCH_IMPORT_LEN = 64;
 export function detectCoreMime(mimeTypes) {
     if (!mimeTypes || mimeTypes.length === 0) return null;
 
-    // 1. 位图图片类（仅常见位图支持缩略图预览；SVG 等矢量格式与 GIF 动图作为未知类型仅保留原始数据）
-    const imgMime = ['image/png', 'image/jpeg', 'image/webp', 'image/bmp'].find(m => mimeTypes.includes(m));
+    // 1. 位图图片类（支持常见位图缩略图预览：PNG, JPEG, WebP, BMP, GIF；SVG 等矢量格式作为未知类型仅保留原始数据）
+    const imgMime = ['image/png', 'image/jpeg', 'image/webp', 'image/bmp', 'image/gif'].find(m => mimeTypes.includes(m));
     if (imgMime) {
         return { mime: imgMime, type: 'image' };
     }
@@ -160,7 +160,7 @@ export function detectCoreMime(mimeTypes) {
         return { mime: 'text/html', type: 'html' };
     }
 
-    // 6. 兜底其它任意合法的 Raw 二进制未知类型（包含 SVG、GIF、Office类软件专有类型等，任何情况下都不能预览，原样展示类型标签）
+    // 6. 兜底其它任意合法的 Raw 二进制未知类型（包含 SVG、Office类软件专有类型等，任何情况下都不能预览，原样展示类型标签）
     const valid = mimeTypes.filter(m => !m.startsWith('TARGETS') && !m.startsWith('TIMESTAMP') && !m.startsWith('MULTIPLE'));
     if (valid.length > 0) {
         return { mime: valid[0], type: 'raw' };
@@ -174,8 +174,8 @@ export function detectCoreMime(mimeTypes) {
 // 1. 一个条目是否能预览，取决于能不能以文本形式显示；
 // 2. 类型严格按照它自身，不能串味到其他类型；
 // 3. 我们只维护有限的类型预览（文本、富文本、文件列表、位图）；
-// 4. 未知类型（统一复合类型，包含 SVG、GIF、Office专有类型等任何不能预览的类型）在原本展示预览文本的地方展示未知类型的类型标签字符串；
-// 5. 且只有位图（PNG/JPEG/WebP/BMP）能以缩略图形式预览。
+// 4. 未知类型（统一复合类型，包含 SVG、Office专有类型等任何不能预览的类型）在原本展示预览文本的地方展示未知类型的类型标签字符串；
+// 5. 且只有位图（PNG/JPEG/WebP/BMP/GIF）能以缩略图形式预览。
 function generatePreview(type, mime, gBytes, unknownTypeName = null, lang = 'zh-CN', extra = null) {
     const size = gBytes.get_size();
     const sizeStr = formatByteSize(size);
@@ -365,7 +365,7 @@ function generatePreview(type, mime, gBytes, unknownTypeName = null, lang = 'zh-
         };
     }
 
-    // 4. 其余未知类型（统一复合类型，包含 SVG、GIF、Office专有类型等任何不能预览的类型）：
+    // 4. 其余未知类型（统一复合类型，包含 SVG、Office专有类型等任何不能预览的类型）：
     // 严格不解析预览内容，在原本展示预览文本的地方展示未知类型的类型标签字符串
     const tag = mime || unknownTypeName || (isEn ? 'Unknown Type' : '未知类型');
     return {

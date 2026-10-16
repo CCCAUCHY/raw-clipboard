@@ -3533,7 +3533,7 @@ await reporter.run('12.11 未知类型统一（包含SVG/GIF/Office专有格式�
     assert(restoredEntry.mime === 'application/x-custom-type-alpha', '回灌保持原始声明的未知类型元数据');
     assert(restoredEntry.bytes.get_size() === 4, '回灌保持原始二进制数据大小');
 
-    // 6. 验证 SVG, GIF 与 Office 软件专有类型统一作为未知类型，并在原本展示预览处原样展示类型标签
+    // 6. 验证 SVG 与 Office 软件专有类型统一作为未知类型展示标签，GIF 加回位图缩略图预览
     // 6.1 SVG
     const svgXml = '<svg width="10" height="10"><rect/></svg>';
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
@@ -3542,13 +3542,19 @@ await reporter.run('12.11 未知类型统一（包含SVG/GIF/Office专有格式�
     assert(itemSvg.title === 'image/svg+xml', `SVG 作为未知类型原样展示类型标签，实际: ${itemSvg.title}`);
     assert(itemSvg.hasThumbIcon === false, 'SVG 作为未知类型不生成缩略图');
 
-    // 6.2 GIF
-    const gifHeader = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00]);
+    // 6.2 GIF 重新加回位图缩略图预览支持
+    const gifBytes = new Uint8Array([
+        0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00, 0x80, 0x00, 0x00,
+        0xff, 0xff, 0xff, 0x00, 0x00, 0x00, 0x21, 0xf9, 0x04, 0x01, 0x00, 0x00, 0x00,
+        0x00, 0x2c, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x01, 0x00, 0x00, 0x02, 0x02,
+        0x44, 0x01, 0x00, 0x3b
+    ]);
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
-        new MockSelectionSource(['image/gif'], gifHeader));
+        new MockSelectionSource(['image/gif'], gifBytes));
+    const entryGif = ext._getEntry(0);
+    assert(entryGif.type === 'image', 'GIF 作为图片类型识别');
     const itemGif = getExtItem(ext, 0);
-    assert(itemGif.title === 'image/gif', `GIF 作为未知类型原样展示类型标签，实际: ${itemGif.title}`);
-    assert(itemGif.hasThumbIcon === false, 'GIF 作为未知类型不生成缩略图');
+    assert(itemGif.hasThumbIcon === true, 'GIF 作为常见位图支持缩略图生成预览');
 
     // 6.3 Office 专有格式 (如 LibreOffice ODT / MS Word DOCX)
     const officeData = new Uint8Array([0x50, 0x4B, 0x03, 0x04, 0x14, 0x00]);
@@ -4347,12 +4353,12 @@ await reporter.run('16.1 网页/办公软件多 MIME 场景探测识别 (text/ht
     const imgWithHtml = detectCoreMime(['image/png', 'text/html', 'text/plain']);
     assert(imgWithHtml.type === 'image', '位图优先于 composite');
 
-    // 4. SVG、GIF 与 Office 软件专有类型作为非预览未知类型
+    // 4. SVG 与 Office 软件专有类型作为非预览未知类型，GIF 识别为位图
     const detectedSvg = detectCoreMime(['image/svg+xml']);
     assert(detectedSvg.type === 'raw' && detectedSvg.mime === 'image/svg+xml', 'SVG 识别为未知类型 raw');
 
     const detectedGif = detectCoreMime(['image/gif']);
-    assert(detectedGif.type === 'raw' && detectedGif.mime === 'image/gif', 'GIF 识别为未知类型 raw');
+    assert(detectedGif.type === 'image' && detectedGif.mime === 'image/gif', 'GIF 识别为位图类型 image');
 
     const detectedOffice = detectCoreMime(['application/vnd.oasis.opendocument.text']);
     assert(detectedOffice.type === 'raw' && detectedOffice.mime === 'application/vnd.oasis.opendocument.text', 'Office专有类型识别为未知类型 raw');
