@@ -130,12 +130,11 @@ export function detectCoreMime(mimeTypes) {
         return { mime: imgMime, type: 'image' };
     }
 
-    // 2. 文件列表 (Nautilus, Nemo, Dolphin 等)
+    // 2. 文件列表 (Nautilus, Nemo 等 GNOME 原生文件管理器)
     // 优先读取 x-special/gnome-copied-files 以便精准识别 copy 或 cut（剪切）动作标记
     const fileMime = ['x-special/gnome-copied-files', 'text/uri-list'].find(m => mimeTypes.includes(m));
     if (fileMime) {
-        const hasKdeCut = mimeTypes.includes('application/x-kde-cutselection');
-        return { mime: fileMime, type: 'files', hasKdeCut, isKdeCut: hasKdeCut };
+        return { mime: fileMime, type: 'files' };
     }
 
     // 3. 复合类型 (多 MIME：如网页复制同时提供 text/html 和 text/plain 两种表示，保留富文本与纯文本双格式)
@@ -169,6 +168,54 @@ export function detectCoreMime(mimeTypes) {
     return null;
 }
 
+/**
+ * 识别文件操作是否为剪切 (Cut) 动作。
+ * 目前专注于 GNOME 原生文件管理器 Nautilus（识别 x-special/gnome-copied-files 与 text/uri-list 首行的 cut 标记）。
+ * 做好抽象接口，后续若需扩展其他桌面环境可在此处统一拓展。
+ */
+export function isFileCutOperation(gBytes) {
+    if (!gBytes || gBytes.get_size() === 0) return false;
+    try {
+        const stream = Gio.MemoryInputStream.new_from_bytes(gBytes);
+        const rawHead = stream.read_bytes(100, null);
+        const data = rawHead.get_data ? rawHead.get_data() : (rawHead.toArray ? rawHead.toArray() : rawHead);
+        const str = Utf8Decoder.decode(data);
+        const lines = str.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
+        const action = lines[0]?.toLowerCase();
+        return action === 'cut' || lines.includes('cut');
+    } catch (_) {
+        return false;
+    }
+}
+
+/**
+ * 统一流式提取前缀预览文本。
+ * 采用 64KB 单次分块按需流式提取，最多 10 次循环（上限 640KB），用 .trim() 剥离前导空文本，
+ * 杜绝大文本或复合类型条目全量 decode 数十 MB 文本的 CPU 与内存浪费。
+ */
+export function extractTextPreview(gBytes, isHtml = false) {
+    if (!gBytes || gBytes.get_size() === 0) return '';
+    try {
+        const stream = Gio.MemoryInputStream.new_from_bytes(gBytes);
+        const CHUNK_SIZE = 64 * 1024; // 64KB (65536 字节)
+        let text = '';
+        let clean = '';
+        for (let attempt = 0; attempt < 10; attempt++) {
+            const chunk = stream.read_bytes(CHUNK_SIZE, null);
+            if (!chunk || chunk.get_size() === 0) break;
+            const data = chunk.get_data ? chunk.get_data() : (chunk.toArray ? chunk.toArray() : chunk);
+            const rawChunk = Utf8Decoder.decode(data);
+            text += rawChunk;
+            const rawProcessed = isHtml ? text.replace(/<[^>]+>/g, ' ') : text;
+            clean = rawProcessed.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').replace(/\s+/g, ' ').trim();
+            if (clean) break;
+        }
+        return clean;
+    } catch (_) {
+        return '';
+    }
+}
+
 // 根据类型和原始字节生成界面显示的简短摘要
 // 关键设计准则：
 // 1. 一个条目是否能预览，取决于能不能以文本形式显示；
@@ -183,33 +230,22 @@ function generatePreview(type, mime, gBytes, unknownTypeName = null, lang = 'zh-
 
     // 0. 复合类型 (多 MIME：优先提取纯文本流进行文本预览，保留富文本与纯文本双格式)
     if (type === 'composite') {
-        let text = '';
+        let clean = '';
         if (extra && extra.textBytes) {
-            try {
-                const data = extra.textBytes.get_data ? extra.textBytes.get_data() : extra.textBytes.toArray();
-                text = Utf8Decoder.decode(data);
-            } catch (_) {}
+            clean = extractTextPreview(extra.textBytes, false);
         }
-        if (!text) {
-            const parts = unpackCompositeBytes(gBytes);
-            const textPart = parts.find(p => p.mime.startsWith('text/plain') || p.mime.includes('STRING'));
+        if (!clean) {
+            const textPart = extractCompositePart(gBytes, m => m.startsWith('text/plain') || m.includes('STRING'));
             if (textPart) {
-                try {
-                    const data = textPart.bytes.get_data ? textPart.bytes.get_data() : textPart.bytes.toArray();
-                    text = Utf8Decoder.decode(data);
-                } catch (_) {}
-            } else {
-                const htmlPart = parts.find(p => p.mime === 'text/html');
-                if (htmlPart) {
-                    try {
-                        const data = htmlPart.bytes.get_data ? htmlPart.bytes.get_data() : htmlPart.bytes.toArray();
-                        const raw = Utf8Decoder.decode(data);
-                        text = raw.replace(/<[^>]+>/g, ' ');
-                    } catch (_) {}
-                }
+                clean = extractTextPreview(textPart, false);
             }
         }
-        const clean = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').replace(/\s+/g, ' ').trim();
+        if (!clean) {
+            const htmlPart = (extra && extra.htmlBytes) ? extra.htmlBytes : extractCompositePart(gBytes, m => m.startsWith('text/html') || m.includes('html'));
+            if (htmlPart) {
+                clean = extractTextPreview(htmlPart, true);
+            }
+        }
         return {
             title: clean.length > 1000 ? `${clean.slice(0, 1000)}…` : (clean || (isEn ? '(Empty text)' : '(空文本)')),
             subtitle: `${isEn ? 'Multi-type' : '多类型'} · ${sizeStr}`,
@@ -217,37 +253,15 @@ function generatePreview(type, mime, gBytes, unknownTypeName = null, lang = 'zh-
         };
     }
 
-    // 1. 文本类 (纯文本、富文本 HTML 等)：通过 Gio.MemoryInputStream 零拷贝流按需读取
+    // 1. 文本类 (纯文本、富文本 HTML 等)：通过统一 64KB 流式按需提取前缀
     // 准则：只要能以文本形式显示，就提取前缀文本作为预览；若全是控制字符/乱码无法以文本形式显示，则只显示类型本身
     if (type === 'text' || type === 'html') {
-        try {
-            const stream = Gio.MemoryInputStream.new_from_bytes(gBytes);
-            const CHUNK_SIZE = 64 * 1024; // 64KB (65536 字节)：吞吐性价比极高，单次仅需零点几毫秒即可大跨步捕获深层文本
-            let text = '';
-            let clean = '';
-
-            // 初次预览逻辑与递进式预览统一成一个最多执行 10 次的循环，遇到非空文本则跳出循环
-            for (let attempt = 0; attempt < 10; attempt++) {
-                const chunk = stream.read_bytes(CHUNK_SIZE, null);
-                if (!chunk || chunk.get_size() === 0) break;
-                text += Utf8Decoder.decode(chunk);
-                clean = text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').replace(/\s+/g, ' ').trim();
-                if (clean) break;
-            }
-
-            // 能以文本形式显示：展示前 1000 字符预览（全空白文本安全显示为 (空文本)）
-            return {
-                title: clean.length > 1000 ? `${clean.slice(0, 1000)}…` : (clean || (isEn ? '(Empty text)' : '(空文本)')),
-                subtitle: `${type === 'html' ? (isEn ? 'HTML' : '富文本') : (isEn ? 'Text' : '文本')} · ${sizeStr}`,
-                icon: type === 'html' ? 'text-html-symbolic' : 'edit-copy-symbolic',
-            };
-        } catch (_e) {
-            return {
-                title: mime,
-                subtitle: sizeStr,
-                icon: type === 'html' ? 'text-html-symbolic' : 'edit-copy-symbolic',
-            };
-        }
+        const clean = extractTextPreview(gBytes, false);
+        return {
+            title: clean.length > 1000 ? `${clean.slice(0, 1000)}…` : (clean || (isEn ? '(Empty text)' : '(空文本)')),
+            subtitle: `${type === 'html' ? (isEn ? 'HTML' : '富文本') : (isEn ? 'Text' : '文本')} · ${sizeStr}`,
+            icon: type === 'html' ? 'text-html-symbolic' : 'edit-copy-symbolic',
+        };
     }
 
     // 2. 文件与目录列表 (按需流式读取前缀路径，以文本形式解析文件名列表进行预览)
@@ -487,6 +501,43 @@ export function unpackCompositeBytes(gBytes) {
         parts.push({ mime, bytes: partBytes });
     }
     return parts;
+}
+
+/**
+ * 从自包含二进制 CMP1 容器流中按需提取指定 MIME 的部件切片，避免全量解包与无用数据物化
+ * @param {GLib.Bytes} gBytes 
+ * @param {string|Function} targetMime 目标 MIME 字符串或匹配函数
+ * @returns {GLib.Bytes|null}
+ */
+export function extractCompositePart(gBytes, targetMime) {
+    if (!gBytes || gBytes.get_size() < 6) return null;
+    const uData = gBytes.get_data ? gBytes.get_data() : (gBytes.toArray ? gBytes.toArray() : gBytes);
+    if (uData[0] !== 0x43 || uData[1] !== 0x4D || uData[2] !== 0x50 || uData[3] !== 0x31) {
+        return null;
+    }
+    const dv = new DataView(uData.buffer, uData.byteOffset, uData.byteLength);
+    const count = dv.getUint16(4, false);
+    let offset = 6;
+    for (let i = 0; i < count; i++) {
+        if (offset + 2 > uData.length) break;
+        const mimeLen = dv.getUint16(offset, false);
+        offset += 2;
+        if (offset + mimeLen > uData.length) break;
+        const mime = Utf8Decoder.decode(uData.subarray(offset, offset + mimeLen));
+        offset += mimeLen;
+        if (offset + 4 > uData.length) break;
+        const dataLen = dv.getUint32(offset, false);
+        offset += 4;
+        if (offset + dataLen > uData.length) break;
+        const isMatch = (typeof targetMime === 'function')
+            ? targetMime(mime)
+            : (mime === targetMime || mime.startsWith(targetMime));
+        if (isMatch) {
+            return makeSliceBytes(gBytes, uData, offset, dataLen);
+        }
+        offset += dataLen;
+    }
+    return null;
 }
 
 export class RadixNode {
@@ -742,6 +793,8 @@ export default class RawClipboardExtension extends Extension {
     #deletedEntries = new Set();
     // 自发回灌回环标识集合（单次消费，用于过滤回灌触发的 owner-changed 事件）
     #activeNonces = new Set();
+    // 追踪所有活跃定时器 ID，支持 disable() 同步统一清理
+    #activeTimerIds = new Set();
     // 未知类型按元数据 raw 格式映射表 (mime -> '未知类型N')
     #unknownTypes = new Map();
     // 缓存条目预览文本的 MD5 摘要 (entry -> 8位 MD5 字符串，不清缓存，WeakMap 随条目生命周期自动释放)
@@ -771,88 +824,23 @@ export default class RawClipboardExtension extends Extension {
         return entry.type !== 'image';
     }
 
-    // 提取条目的纯文本形式 (用于“复制文本”注入剪贴板与历史入库)
-    _extractTextForm(entry) {
-        if (!entry) return '';
-        if (entry.type === 'composite') {
-            if (entry.textBytes) {
-                try {
-                    const data = entry.textBytes.get_data ? entry.textBytes.get_data() : entry.textBytes.toArray();
-                    const s = Utf8Decoder.decode(data);
-                    const clean = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim();
-                    if (clean) return clean;
-                } catch (_) {}
-            }
-            if (entry.htmlBytes) {
-                try {
-                    const data = entry.htmlBytes.get_data ? entry.htmlBytes.get_data() : entry.htmlBytes.toArray();
-                    const raw = Utf8Decoder.decode(data);
-                    let s = raw.replace(/<br\s*\/?>/gi, '\n')
-                               .replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n')
-                               .replace(/<[^>]+>/g, '')
-                               .replace(/&nbsp;/gi, ' ')
-                               .replace(/&amp;/gi, '&')
-                               .replace(/&lt;/gi, '<')
-                               .replace(/&gt;/gi, '>')
-                               .replace(/&quot;/gi, '"')
-                               .replace(/&#39;/gi, "'");
-                    const clean = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim();
-                    if (clean) return clean;
-                } catch (_) {}
-            }
-            return entry.preview || '';
+    _addTimeout(intervalMs, callback, priority = GLib.PRIORITY_DEFAULT) {
+        let id = 0;
+        id = GLib.timeout_add(priority, intervalMs, () => {
+            this.#activeTimerIds.delete(id);
+            return callback();
+        });
+        if (id > 0) {
+            this.#activeTimerIds.add(id);
         }
-        if (entry.type === 'text') {
-            try {
-                const data = entry.bytes.get_data ? entry.bytes.get_data() : entry.bytes.toArray();
-                return Utf8Decoder.decode(data);
-            } catch (_) {
-                return entry.preview || '';
-            }
+        return id;
+    }
+
+    _removeTimeout(id) {
+        if (id > 0) {
+            GLib.source_remove(id);
+            this.#activeTimerIds.delete(id);
         }
-        if (entry.type === 'html') {
-            try {
-                const data = entry.bytes.get_data ? entry.bytes.get_data() : entry.bytes.toArray();
-                const raw = Utf8Decoder.decode(data);
-                // 剥离 HTML 标签并将换行/段落标签转换为换行，还原纯文本内容
-                let s = raw.replace(/<br\s*\/?>/gi, '\n')
-                           .replace(/<\/(p|div|tr|li|h[1-6])>/gi, '\n')
-                           .replace(/<[^>]+>/g, '')
-                           .replace(/&nbsp;/gi, ' ')
-                           .replace(/&amp;/gi, '&')
-                           .replace(/&lt;/gi, '<')
-                           .replace(/&gt;/gi, '>')
-                           .replace(/&quot;/gi, '"')
-                           .replace(/&#39;/gi, "'");
-                const clean = s.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').trim();
-                return clean || (entry.preview || '');
-            } catch (_) {
-                return entry.preview || '';
-            }
-        }
-        if (entry.type === 'files') {
-            try {
-                const data = entry.bytes.get_data ? entry.bytes.get_data() : entry.bytes.toArray();
-                const raw = Utf8Decoder.decode(data);
-                const lines = raw.split('\n')
-                    .map(l => l.trim())
-                    .filter(l => l && !l.startsWith('#') && l !== 'copy' && l !== 'cut');
-                const paths = lines.map(uri => {
-                    try {
-                        if (uri.startsWith('file://')) {
-                            const [p] = GLib.filename_from_uri(uri);
-                            if (p) return p;
-                        }
-                    } catch (_) {}
-                    return uri;
-                });
-                if (paths.length > 0) {
-                    return paths.join('\n');
-                }
-            } catch (_) {}
-            return entry.preview || '';
-        }
-        return entry.preview || '';
     }
 
     _getLanguage() {
@@ -1363,36 +1351,44 @@ export default class RawClipboardExtension extends Extension {
             this._cancellable = null;
         }
 
-        // 3. 取消任何挂起的 UI idle 刷新
+        // 3. 取消任何挂起的 UI idle 刷新与活跃定时器
         if (this._renderIdleId) {
             GLib.source_remove(this._renderIdleId);
             this._renderIdleId = 0;
         }
+        for (const timerId of this.#activeTimerIds) {
+            try {
+                GLib.source_remove(timerId);
+            } catch (_) {}
+        }
+        this.#activeTimerIds.clear();
 
         // 4. 断开设置监听
-        if (this._settingsChangedId >= 0) {
-            this._settings.disconnect(this._settingsChangedId);
-            this._settingsChangedId = -1;
-        }
+        if (this._settings) {
+            if (this._settingsChangedId >= 0) {
+                this._settings.disconnect(this._settingsChangedId);
+                this._settingsChangedId = -1;
+            }
 
-        if (this._maxSizeChangedId >= 0) {
-            this._settings.disconnect(this._maxSizeChangedId);
-            this._maxSizeChangedId = -1;
-        }
+            if (this._maxSizeChangedId >= 0) {
+                this._settings.disconnect(this._maxSizeChangedId);
+                this._maxSizeChangedId = -1;
+            }
 
-        if (this._totalSizeChangedId >= 0) {
-            this._settings.disconnect(this._totalSizeChangedId);
-            this._totalSizeChangedId = -1;
-        }
+            if (this._totalSizeChangedId >= 0) {
+                this._settings.disconnect(this._totalSizeChangedId);
+                this._totalSizeChangedId = -1;
+            }
 
-        if (this._shortcutChangedId >= 0) {
-            this._settings.disconnect(this._shortcutChangedId);
-            this._shortcutChangedId = -1;
-        }
+            if (this._shortcutChangedId >= 0) {
+                this._settings.disconnect(this._shortcutChangedId);
+                this._shortcutChangedId = -1;
+            }
 
-        if (this._langChangedId >= 0) {
-            this._settings.disconnect(this._langChangedId);
-            this._langChangedId = -1;
+            if (this._langChangedId >= 0) {
+                this._settings.disconnect(this._langChangedId);
+                this._langChangedId = -1;
+            }
         }
 
         if (this._sessionUpdatedId && Main.sessionMode) {
@@ -1678,6 +1674,10 @@ export default class RawClipboardExtension extends Extension {
         const readCancellable = new Gio.Cancellable();
         this._currentReadCancellable = readCancellable;
 
+        // 绑定创建时的 settings 与 cancellable，确保生命周期成对释放，杜绝跨代污染
+        const boundSettings = this._settings;
+        const boundCancellable = this._cancellable;
+
         let parentCancelId = 0;
         let watchdogId = 0;
         let overallTimeoutId = 0;
@@ -1685,8 +1685,8 @@ export default class RawClipboardExtension extends Extension {
         const overallStartTime = Date.now();
 
         try {
-            if (this._cancellable) {
-                parentCancelId = this._cancellable.connect(() => {
+            if (boundCancellable) {
+                parentCancelId = boundCancellable.connect(() => {
                     readCancellable.cancel();
                 });
             }
@@ -1694,18 +1694,18 @@ export default class RawClipboardExtension extends Extension {
             let inactivityTimeoutMs = INACTIVITY_TIMEOUT_MS;
             let overallTimeoutMs = OVERALL_TIMEOUT_MS;
 
-            if (this._settings) {
+            if (boundSettings) {
                 try {
-                    const schema = this._settings.settings_schema;
+                    const schema = boundSettings.settings_schema;
                     if (!schema || schema.has_key('inactivity-timeout-sec')) {
-                        const sec = this._settings.get_int('inactivity-timeout-sec');
+                        const sec = boundSettings.get_int('inactivity-timeout-sec');
                         if (sec > 0) inactivityTimeoutMs = sec * 1000;
                     }
                 } catch (_) {}
                 try {
-                    const schema = this._settings.settings_schema;
+                    const schema = boundSettings.settings_schema;
                     if (!schema || schema.has_key('overall-timeout-sec')) {
-                        const sec = this._settings.get_int('overall-timeout-sec');
+                        const sec = boundSettings.get_int('overall-timeout-sec');
                         if (sec > 0) overallTimeoutMs = sec * 1000;
                     }
                 } catch (_) {}
@@ -1719,12 +1719,24 @@ export default class RawClipboardExtension extends Extension {
             }
 
             // 守卫 1: 0 字节停滞看门狗 (连续指定毫秒无数据到达则超时熔断)
+            // 支持动态感知设置项更新：每次重置看门狗时读取最新配置
             const resetWatchdog = () => {
                 if (watchdogId > 0) {
-                    GLib.source_remove(watchdogId);
+                    this._removeTimeout(watchdogId);
                     watchdogId = 0;
                 }
-                watchdogId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, inactivityTimeoutMs, () => {
+                if (this._inactivityTimeoutMs !== undefined) {
+                    inactivityTimeoutMs = this._inactivityTimeoutMs;
+                } else if (boundSettings) {
+                    try {
+                        const schema = boundSettings.settings_schema;
+                        if (!schema || schema.has_key('inactivity-timeout-sec')) {
+                            const sec = boundSettings.get_int('inactivity-timeout-sec');
+                            if (sec > 0) inactivityTimeoutMs = sec * 1000;
+                        }
+                    } catch (_) {}
+                }
+                watchdogId = this._addTimeout(inactivityTimeoutMs, () => {
                     watchdogId = 0;
                     this._warn(`[RawClipboard] 触发 0 字节停滞超时 (连续 ${inactivityTimeoutMs}ms 无数据到达)，中止并丢弃当前读取`);
                     readCancellable.cancel();
@@ -1737,7 +1749,7 @@ export default class RawClipboardExtension extends Extension {
             // 且支持动态修改配置：修改此配置后，若当前已用传输时间超出此限制，则自动取消本次传输
             const scheduleOverallTimeout = (timeoutMs) => {
                 if (overallTimeoutId > 0) {
-                    GLib.source_remove(overallTimeoutId);
+                    this._removeTimeout(overallTimeoutId);
                     overallTimeoutId = 0;
                 }
                 const elapsedMs = Date.now() - overallStartTime;
@@ -1747,7 +1759,7 @@ export default class RawClipboardExtension extends Extension {
                     return;
                 }
                 const remainingMs = timeoutMs - elapsedMs;
-                overallTimeoutId = GLib.timeout_add(GLib.PRIORITY_DEFAULT, remainingMs, () => {
+                overallTimeoutId = this._addTimeout(remainingMs, () => {
                     overallTimeoutId = 0;
                     this._warn(`[RawClipboard] 触发单次抓取总体硬超时 (达 ${timeoutMs}ms 上限)，中止并丢弃当前读取`);
                     readCancellable.cancel();
@@ -1757,11 +1769,11 @@ export default class RawClipboardExtension extends Extension {
 
             scheduleOverallTimeout(overallTimeoutMs);
 
-            if (this._settings) {
+            if (boundSettings) {
                 try {
-                    overallSettingsChangedId = this._settings.connect('changed::overall-timeout-sec', () => {
+                    overallSettingsChangedId = boundSettings.connect('changed::overall-timeout-sec', () => {
                         try {
-                            const sec = this._settings.get_int('overall-timeout-sec');
+                            const sec = boundSettings.get_int('overall-timeout-sec');
                             if (sec > 0) {
                                 scheduleOverallTimeout(sec * 1000);
                             }
@@ -1841,53 +1853,9 @@ export default class RawClipboardExtension extends Extension {
 
             // 严格识别与拦截“剪切文件”操作 (Cut Files Filter)：
             // 剪切文件（Ctrl+X）在粘贴后源文件即被物理移动，无法重复回放，故严格禁止进入历史队列
-            if (core.type === 'files') {
-                let isCut = false;
-                if (core.hasKdeCut) {
-                    try {
-                        const kdeRes = await this._readMimeStream(selectionSource, 'application/x-kde-cutselection', readCancellable, resetWatchdog, 1024, 0);
-                        if (readCancellable.is_cancelled() || !this._cancellable || this._cancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) {
-                            this._log('[RawClipboard] 读取 KDE 标记期间被取消或易手，放弃入库');
-                            return;
-                        }
-                        if (kdeRes && kdeRes.bytes && kdeRes.bytes.get_size() > 0) {
-                            const data = kdeRes.bytes.get_data ? kdeRes.bytes.get_data() : (kdeRes.bytes.toArray ? kdeRes.bytes.toArray() : kdeRes.bytes);
-                            const kdeStr = Utf8Decoder.decode(data).trim();
-                            // KDE Dolphin 规范：
-                            // 无论复制还是剪切，MIME 列表中都会携带 application/x-kde-cutselection。
-                            // 内容为 "0" 表示普通复制；内容为 "1" (或非 "0") 表示剪切。
-                            if (kdeStr === '0') {
-                                isCut = false;
-                            } else {
-                                isCut = true;
-                            }
-                        } else {
-                            isCut = true;
-                        }
-                    } catch (_e) {
-                        if (readCancellable.is_cancelled() || !this._cancellable || this._cancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) {
-                            this._log('[RawClipboard] 读取 KDE 标记期间被取消或易手，放弃入库');
-                            return;
-                        }
-                        isCut = false;
-                    }
-                }
-                if (!isCut) {
-                    try {
-                        const stream = Gio.MemoryInputStream.new_from_bytes(gBytes);
-                        const rawHead = stream.read_bytes(100, null);
-                        const str = Utf8Decoder.decode(rawHead);
-                        const lines = str.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'));
-                        const action = lines[0]?.toLowerCase();
-                        if (action === 'cut' || lines.includes('cut')) {
-                            isCut = true;
-                        }
-                    } catch (_e) {}
-                }
-                if (isCut) {
-                    this._log('[RawClipboard] 拦截剪切文件操作：源文件移动后不可回放，不进入历史队列');
-                    return;
-                }
+            if (core.type === 'files' && isFileCutOperation(gBytes)) {
+                this._log('[RawClipboard] 拦截剪切文件操作：源文件移动后不可回放，不进入历史队列');
+                return;
             }
 
             // 再次校验生命周期与抢占状态，若在读取或处理过程中已被取消或抢占，则放弃入库
@@ -2014,15 +1982,13 @@ export default class RawClipboardExtension extends Extension {
                     },
                     get htmlBytes() {
                         if (core.type === 'composite') {
-                            const p = this.parts.find(x => x.mime.startsWith('text/html') || x.mime.includes('html'));
-                            return p ? p.bytes : null;
+                            return extractCompositePart(this.bytes, m => m.startsWith('text/html') || m.includes('html'));
                         }
                         return null;
                     },
                     get textBytes() {
                         if (core.type === 'composite') {
-                            const p = this.parts.find(x => x.mime.startsWith('text/plain') || x.mime.includes('STRING'));
-                            return p ? p.bytes : null;
+                            return extractCompositePart(this.bytes, m => m.startsWith('text/plain') || m.includes('STRING'));
                         }
                         return null;
                     },
@@ -2119,22 +2085,25 @@ export default class RawClipboardExtension extends Extension {
             }
             this._warn('[RawClipboard] Capture error:', e.message);
         } finally {
-            if (overallSettingsChangedId > 0 && this._settings) {
+            if (overallSettingsChangedId > 0 && boundSettings) {
                 try {
-                    this._settings.disconnect(overallSettingsChangedId);
+                    boundSettings.disconnect(overallSettingsChangedId);
                 } catch (_) {}
                 overallSettingsChangedId = 0;
             }
             if (watchdogId > 0) {
-                GLib.source_remove(watchdogId);
+                this._removeTimeout(watchdogId);
                 watchdogId = 0;
             }
             if (overallTimeoutId > 0) {
-                GLib.source_remove(overallTimeoutId);
+                this._removeTimeout(overallTimeoutId);
                 overallTimeoutId = 0;
             }
-            if (parentCancelId > 0 && this._cancellable) {
-                this._cancellable.disconnect(parentCancelId);
+            if (parentCancelId > 0 && boundCancellable) {
+                try {
+                    boundCancellable.disconnect(parentCancelId);
+                } catch (_) {}
+                parentCancelId = 0;
             }
             if (this._currentReadCancellable === readCancellable) {
                 this._currentReadCancellable = null;
@@ -2232,7 +2201,7 @@ export default class RawClipboardExtension extends Extension {
             this.#activeNonces.add(nonce);
 
             // 500ms 超时清理，防止未触发 owner-changed 时标识滞留
-            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+            this._addTimeout(500, () => {
                 this.#activeNonces.delete(nonce);
                 return GLib.SOURCE_REMOVE;
             });
@@ -2241,7 +2210,7 @@ export default class RawClipboardExtension extends Extension {
             try {
                 let source = null;
                 let mime = selectedMime;
-                let contentBytes = entry.bytes;
+                let contentBytes = null;
 
                 if (entry.type === 'composite') {
                     if (mime === 'text/html' || mime.includes('html')) {
@@ -2249,12 +2218,11 @@ export default class RawClipboardExtension extends Extension {
                         contentBytes = entry.htmlBytes || entry.bytes;
                     } else if (mime.startsWith('text/plain') || mime.includes('STRING')) {
                         contentBytes = entry.textBytes || entry.bytes;
-                    } else if (entry.parts && entry.parts.length > 0) {
-                        const p = entry.parts.find(x => x.mime === mime);
-                        if (p) {
-                            contentBytes = p.bytes;
-                        }
+                    } else {
+                        contentBytes = extractCompositePart(entry.bytes, mime) || entry.bytes;
                     }
+                } else {
+                    contentBytes = entry.bytes;
                 }
 
                 if (Meta && Meta.SelectionSourceMemory && typeof Meta.SelectionSourceMemory.new === 'function') {
@@ -2315,7 +2283,7 @@ export default class RawClipboardExtension extends Extension {
         if (!entry || !targetType) return;
         if (targetType === 'text') {
             // 直接换文本类型标签，不再进行任何解析和修改
-            const textBytes = (entry.type === 'composite' && entry.textBytes) ? entry.textBytes : entry.bytes;
+            const textBytes = (entry.type === 'composite') ? (entry.textBytes || entry.bytes) : entry.bytes;
             if (!textBytes || textBytes.get_size() === 0) return;
 
             const mime = 'text/plain;charset=utf-8';
@@ -2324,7 +2292,7 @@ export default class RawClipboardExtension extends Extension {
             // 1. 生成单次回环标识并挂载至数据源对象，回灌守卫照常工作
             const nonce = GLib.uuid_string_random();
             this.#activeNonces.add(nonce);
-            GLib.timeout_add(GLib.PRIORITY_DEFAULT, 500, () => {
+            this._addTimeout(500, () => {
                 this.#activeNonces.delete(nonce);
                 return GLib.SOURCE_REMOVE;
             });
@@ -2434,15 +2402,6 @@ export default class RawClipboardExtension extends Extension {
                 this._closePopup();
             }
         }
-    }
-
-    // 向后兼容接口：映射至类型转换引擎
-    _copyTextFromEntry(entry) {
-        return this._convertEntry(entry, 'text');
-    }
-
-    _copyAsText(entry) {
-        return this._convertEntry(entry, 'text');
     }
 
     _deleteEntry(indexOrEntry) {
@@ -3196,7 +3155,16 @@ export default class RawClipboardExtension extends Extension {
         const doSearch = () => {
             if (searchHandled) return;
             searchHandled = true;
-            const preview = (entry.preview || '').slice(0, MAX_SEARCH_IMPORT_LEN);
+            let preview = entry.preview || '';
+            if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+                const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+                const segments = Array.from(segmenter.segment(preview));
+                if (segments.length > MAX_SEARCH_IMPORT_LEN) {
+                    preview = segments.slice(0, MAX_SEARCH_IMPORT_LEN).map(s => s.segment).join('');
+                }
+            } else {
+                preview = Array.from(preview).slice(0, MAX_SEARCH_IMPORT_LEN).join('');
+            }
             this._closeContextMenu();
             this._enterSearchMode(preview);
         };

@@ -1169,7 +1169,7 @@ await reporter.run('6.1 单文件与多文件折叠展示逻辑 (1个、2个、5
     ext.disable();
 });
 
-await reporter.run('6.2 剪切文件精准拦截与复制文件安全入库 (GNOME cut & KDE cutselection 严禁入库)', async () => {
+await reporter.run('6.2 剪切文件精准拦截与复制文件安全入库 (GNOME Nautilus cut 严禁入库)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -1179,26 +1179,11 @@ await reporter.run('6.2 剪切文件精准拦截与复制文件安全入库 (GNO
         new MockSelectionSource(['x-special/gnome-copied-files'], new TextEncoder().encode(cutText)));
     assert(getExtItemCount(ext) === 0, 'GNOME 剪切文件严禁进入历史队列');
 
-    // 2. KDE Dolphin 剪切文件 (包含 application/x-kde-cutselection 内容为 "1")
-    const kdeCutText = 'file:///home/user/kde_moved.txt\n';
+    // 2. GNOME Nautilus 剪切文件 (text/uri-list 首行为 cut)
+    const uriCutText = 'cut\nfile:///home/user/target_moved2.txt\n';
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
-        new MockSelectionSource(['text/uri-list', 'application/x-kde-cutselection'], {
-            'text/uri-list': new TextEncoder().encode(kdeCutText),
-            'application/x-kde-cutselection': new TextEncoder().encode('1'),
-        }));
-    assert(getExtItemCount(ext) === 0, 'KDE 剪切文件（标记为1）严禁进入历史队列');
-
-    // 2.1 KDE Dolphin 普通复制文件 (包含 application/x-kde-cutselection 内容为 "0")
-    const kdeCopyText = 'file:///home/user/kde_copied.txt\n';
-    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
-        new MockSelectionSource(['text/uri-list', 'application/x-kde-cutselection'], {
-            'text/uri-list': new TextEncoder().encode(kdeCopyText),
-            'application/x-kde-cutselection': new TextEncoder().encode('0'),
-        }));
-    assert(getExtItemCount(ext) === 1, 'KDE 普通复制文件（标记为0）应正常进入历史队列，绝不误杀');
-    assert(getExtItem(ext, 0).title === 'kde_copied.txt', 'KDE 复制文件名正确提取');
-    ext._deleteEntry(0);
-    assert(getExtItemCount(ext) === 0, '清理队列');
+        new MockSelectionSource(['text/uri-list'], new TextEncoder().encode(uriCutText)));
+    assert(getExtItemCount(ext) === 0, 'text/uri-list 剪切文件严禁进入历史队列');
 
     // 3. 正常复制文件 (首行为 copy 或纯 uri-list) 应正常进入历史队列
     const copyText = '# GNOME Nautilus Drag\ncopy\nfile:///home/user/target_copied.txt\n';
@@ -4957,16 +4942,13 @@ await reporter.run('12.17 复合条目纯单树存储与按需解包验证 (零�
     ext.disable();
 });
 
-await reporter.run('12.18 KDE 标记读取取消与抢占时拒绝重复记录提升与软删除恢复测试', async () => {
+await reporter.run('12.18 数据流读取取消与抢占时拒绝重复记录提升与软删除恢复测试', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
     // 1. 先保存文件 A，再保存文本 B
     const fileA = 'copy\nfile:///home/user/docA.txt\n';
-    const srcA = new MockSelectionSource(['text/uri-list', 'application/x-kde-cutselection'], {
-        'text/uri-list': new TextEncoder().encode(fileA),
-        'application/x-kde-cutselection': new TextEncoder().encode('0'),
-    });
+    const srcA = new MockSelectionSource(['text/uri-list'], new TextEncoder().encode(fileA));
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcA);
 
     const textB = 'Text B';
@@ -4981,15 +4963,17 @@ await reporter.run('12.18 KDE 标记读取取消与抢占时拒绝重复记录�
     ext._deleteEntry(entryA);
     assert(ext._getVisibleEntries().length === 1, '删除后仅剩 B 可见');
 
-    // 2. 模拟重新复制 A，但在读取 KDE 标记时外部取消/易手
-    const cancelSource = new MockSelectionSource(['text/uri-list', 'application/x-kde-cutselection'], {
-        'text/uri-list': new TextEncoder().encode(fileA),
-        get 'application/x-kde-cutselection'() {
-            // 在读取标记时取消扩展 cancellable
-            ext._cancellable.cancel();
-            return new TextEncoder().encode('0');
+    // 2. 模拟重新复制 A，但在读取数据流时外部取消/易手
+    const cancelSource = {
+        get_mimetypes() { return ['text/uri-list']; },
+        async read_async(mime, cancellable) {
+            // 在读取时取消扩展 cancellable
+            if (ext._cancellable) {
+                ext._cancellable.cancel();
+            }
+            return Gio.MemoryInputStream.new_from_bytes(new GLib.Bytes(new TextEncoder().encode(fileA)));
         }
-    });
+    };
 
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, cancelSource);
 

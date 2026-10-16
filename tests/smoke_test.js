@@ -12,13 +12,10 @@ function detectCoreMime(mimeTypes) {
     const imgMime = ['image/png', 'image/jpeg', 'image/webp', 'image/bmp', 'image/gif'].find(m => mimeTypes.includes(m));
     if (imgMime) return { mime: imgMime, type: 'image' };
 
-    // 2. 复制文件列表 (Nautilus, Dolphin 等)
+    // 2. 复制文件列表 (Nautilus 等 GNOME 原生文件管理器)
     // 优先读取 x-special/gnome-copied-files 以便精准识别 copy 或 cut（剪切）动作标记
     const fileMime = ['x-special/gnome-copied-files', 'text/uri-list'].find(m => mimeTypes.includes(m));
-    if (fileMime) {
-        const isKdeCut = mimeTypes.includes('application/x-kde-cutselection');
-        return { mime: fileMime, type: 'files', isKdeCut };
-    }
+    if (fileMime) return { mime: fileMime, type: 'files' };
 
     // 3. 复合类型 (多 MIME：如网页复制同时提供 text/html 和 text/plain 两种表示，保留富文本与纯文本双格式)
     const hasHtml = mimeTypes.includes('text/html');
@@ -160,12 +157,13 @@ async function runTests() {
         throw new Error('未能识别 GNOME Nautilus 剪切文件动作');
     }
 
-    // KDE Dolphin 剪切标记
-    const kdeDetected = detectCoreMime(['text/uri-list', 'application/x-kde-cutselection']);
-    if (!kdeDetected || !kdeDetected.isKdeCut) {
-        throw new Error('未能识别 KDE Dolphin 剪切文件动作 (application/x-kde-cutselection)');
+    const copyPayload = 'copy\nfile:///home/vmuser/Documents/normal.docx\n';
+    const copyBytes = GLib.Bytes.new(new TextEncoder().encode(copyPayload));
+    const firstLineCopy = Utf8Decoder.decode(copyBytes.toArray()).trim().split('\n')[0]?.trim().toLowerCase();
+    if (firstLineCopy === 'cut') {
+        throw new Error('误将普通复制文件识别为剪切');
     }
-    print('  ✓ GNOME 与 KDE 剪切文件标记识别准确，成功拦截！');
+    print('  ✓ GNOME Nautilus 剪切文件标记与普通复制识别准确，成功拦截剪切！');
 
     // 4. 测试可配置超大流限制（防止过大内存占用，支持最大 1024MB / 1GB）
     print('[测试 4] 验证可配置超大 Payload 限制拦截...');
