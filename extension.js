@@ -2927,11 +2927,16 @@ export default class RawClipboardExtension extends Extension {
 
             this._popup.set_position(posX, posY);
 
-            // 鼠标滚轮翻页监听 (滚轮向下翻至下一页，向上翻至上一页，灵敏平滑防抖)
+            // 鼠标滚轮与触控板翻页监听 (优化触控板手势算法：手势锁步、单次划动翻一页、阻尼过滤防失控)
             let lastScrollTime = 0;
             let lastScrollDir = 0;
             let smoothAccumulator = 0;
-            const SCROLL_DEBOUNCE_MS = 60; // 60ms 极速防抖：过滤瞬间机械抖动，同时确保连续滚轮与方向键一致的瞬时响应
+            let smoothGestureLocked = false;
+            let lastSmoothTime = 0;
+
+            const SMOOTH_THRESHOLD = 0.35; // 阻尼门槛：过滤手指轻微触碰抖动 (同时保持 dy=0.5 单步测试兼容)
+            const SMOOTH_TIMEOUT_MS = 180; // 180ms 静止或手指抬起即判定划动手势结束，解除锁步
+            const WHEEL_DEBOUNCE_MS = 60; // 机械滚轮防抖：过滤瞬间机械抖动，保障连续滚轮与方向键一致的顺滑响应
 
             const handleScrollEvent = (_actor, event) => {
                 if (this._contextMenu) {
@@ -2945,32 +2950,69 @@ export default class RawClipboardExtension extends Extension {
                 const direction = event.get_scroll_direction();
                 let delta = 0;
 
+                // 优先检测驱动层触控板抬手/手势终止标志 (Clutter.ScrollFinishFlags.VERTICAL)
+                const finishFlags = (typeof event.get_scroll_finish_flags === 'function')
+                    ? event.get_scroll_finish_flags()
+                    : 0;
+                const isFinish = finishFlags && (finishFlags & Clutter.ScrollFinishFlags.VERTICAL);
+                if (isFinish) {
+                    smoothGestureLocked = false;
+                    smoothAccumulator = 0;
+                    lastSmoothTime = 0;
+                }
+
                 if (direction === Clutter.ScrollDirection.UP) {
                     delta = -1;
+                    smoothGestureLocked = false;
+                    smoothAccumulator = 0;
                 } else if (direction === Clutter.ScrollDirection.DOWN) {
                     delta = 1;
+                    smoothGestureLocked = false;
+                    smoothAccumulator = 0;
                 } else if (direction === Clutter.ScrollDirection.SMOOTH) {
                     const [, dy] = event.get_scroll_delta();
-                    if (now - lastScrollTime > 250) {
+
+                    // 超时重置：若距离上次平滑事件超过 180ms，说明上一次划动已静止，释放手势锁
+                    if (now - lastSmoothTime > SMOOTH_TIMEOUT_MS) {
+                        smoothGestureLocked = false;
                         smoothAccumulator = 0;
                     }
+                    lastSmoothTime = now;
+
+                    // 反向划动检测：若在锁定期间用户明确向反方向划动，立即解除锁定并响应反向操作
+                    const currentSign = dy > 0.05 ? 1 : (dy < -0.05 ? -1 : 0);
+                    if (currentSign !== 0 && lastScrollDir !== 0 && currentSign !== lastScrollDir) {
+                        smoothGestureLocked = false;
+                        smoothAccumulator = 0;
+                    }
+
+                    // 触控板单次划动锁步（One Swipe = Exactly One Page）：
+                    // 一旦当前划动已触发过翻页，在手指抬起或停顿前，全量吸收后续同一手势的事件，彻底根除失控飞速翻页
+                    if (smoothGestureLocked) {
+                        return Clutter.EVENT_STOP;
+                    }
+
                     smoothAccumulator += dy;
-                    if (smoothAccumulator >= 0.25) {
+                    if (smoothAccumulator >= SMOOTH_THRESHOLD) {
                         delta = 1;
                         smoothAccumulator = 0;
-                    } else if (smoothAccumulator <= -0.25) {
+                        smoothGestureLocked = true; // 锁定当前手势，一次划动只翻一页
+                    } else if (smoothAccumulator <= -SMOOTH_THRESHOLD) {
                         delta = -1;
                         smoothAccumulator = 0;
+                        smoothGestureLocked = true; // 锁定当前手势，一次划动只翻一页
                     } else {
                         return Clutter.EVENT_STOP;
                     }
                 }
 
                 if (delta !== 0) {
-                    // 反向滚动立即响应零延迟；同向滚动应用 60ms 防抖，保障连续滚轮与方向键一致的顺滑
-                    const isReversal = (lastScrollDir !== 0 && delta !== lastScrollDir);
-                    if (!isReversal && (now - lastScrollTime < SCROLL_DEBOUNCE_MS)) {
-                        return Clutter.EVENT_STOP;
+                    // 机械滚轮防抖（平滑手势已由单次锁步机制保护，不依赖短毫秒防抖）
+                    if (direction !== Clutter.ScrollDirection.SMOOTH) {
+                        const isReversal = (lastScrollDir !== 0 && delta !== lastScrollDir);
+                        if (!isReversal && (now - lastScrollTime < WHEEL_DEBOUNCE_MS)) {
+                            return Clutter.EVENT_STOP;
+                        }
                     }
 
                     // 首尾循环翻页防误触：第一页向上翻至末页、或最后一页向下翻至第一页时，首次操作仅提示“循环？”，二次操作才执行翻页

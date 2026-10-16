@@ -2549,6 +2549,59 @@ await reporter.run('9.10 快捷键关闭弹窗测试 (弹窗打开状态下按 <
     ext.disable();
 });
 
+await reporter.run('9.11 触控板高频平滑滚动单次划动手势锁步测试 (One Swipe = Exactly One Page，单次划动仅翻一页，抬手/停顿开启下一手势)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 写入 24 条条目 (共 3 页: 0, 1, 2)
+    for (let i = 1; i <= 24; i++) {
+        const src = new MockSelectionSource(['text/plain'], new TextEncoder().encode(`TouchpadItem-${i}`));
+        await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src);
+    }
+
+    ext._openPopup();
+    assert(ext._currentPage === 0, '初始在第 0 页');
+
+    const makeSmoothEvent = (dy, isFinish = false) => ({
+        get_scroll_direction: () => Clutter.ScrollDirection.SMOOTH,
+        get_scroll_delta: () => [0, dy],
+        get_scroll_finish_flags: () => isFinish ? Clutter.ScrollFinishFlags.VERTICAL : Clutter.ScrollFinishFlags.NONE,
+    });
+
+    // 1. 模拟触控板单次向下滑动手势（在极短时间内连续发射多个平滑滚动事件）
+    ext._popup.emit('scroll-event', makeSmoothEvent(0.2));
+    ext._popup.emit('scroll-event', makeSmoothEvent(0.4)); // 累积达到 0.6 >= 0.35，翻至第 1 页并上锁
+    assert(ext._currentPage === 1, '达到手势阈值后翻至第 1 页');
+
+    // 2. 双指尚未离开触控板，同一划动手势继续向下滑动发射大量高位移事件
+    ext._popup.emit('scroll-event', makeSmoothEvent(0.8));
+    ext._popup.emit('scroll-event', makeSmoothEvent(1.2));
+    ext._popup.emit('scroll-event', makeSmoothEvent(1.0));
+    ext._popup.emit('scroll-event', makeSmoothEvent(0.8));
+    ext._popup.emit('scroll-event', makeSmoothEvent(0.5));
+
+    // 严格断言：手势锁步生效，同一次连续划动绝不连翻到第 2 页，稳稳停留在第 1 页！
+    assert(ext._currentPage === 1, '触控板单次划动锁步生效：后续同向事件被全量吸收，严格保持在第 1 页');
+
+    // 3. 模拟用户向反方向划动（无需等待超时，即刻响应反向操作）
+    ext._popup.emit('scroll-event', makeSmoothEvent(-0.6));
+    assert(ext._currentPage === 0, '反向划动即刻解锁并翻回第 0 页');
+
+    // 4. 模拟等待 200ms 手势静止结束，开启下一次划动
+    GLib.usleep(200000);
+    ext._popup.emit('scroll-event', makeSmoothEvent(0.5));
+    assert(ext._currentPage === 1, '新一轮划动手势成功翻至第 1 页');
+
+    // 5. 模拟触发触控板抬手完成标志 (ScrollFinishFlags.VERTICAL)
+    ext._popup.emit('scroll-event', makeSmoothEvent(0, true));
+    // 抬手后无需等待 200ms，再次划动立即生效翻页
+    ext._popup.emit('scroll-event', makeSmoothEvent(0.5));
+    assert(ext._currentPage === 2, '触控板抬手后立即开始下一次手势，翻至第 2 页');
+
+    ext._closePopup();
+    ext.disable();
+});
+
 // ============================================================================
 // SUITE 10: 对象封装与日志开关验证
 // ============================================================================
