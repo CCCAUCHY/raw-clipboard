@@ -3469,7 +3469,7 @@ await reporter.run('12.10 复制时间在弹窗中显示与 formatTime 格式化
     ext.disable();
 });
 
-await reporter.run('12.11 未知类型元数据raw分树与“未知类型1”“未知类型2”不预览展示测试', async () => {
+await reporter.run('12.11 未知类型统一（包含SVG/GIF/Office专有格式等）原样展示类型标签字符串与raw分树测试', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -3480,7 +3480,7 @@ await reporter.run('12.11 未知类型元数据raw分树与“未知类型1”�
 
     assert(getExtItemCount(ext) === 1, '未知类型 Alpha 1 入库成功');
     const itemAlpha1 = getExtItem(ext, 0);
-    assert(itemAlpha1.title === '未知类型1', `未知类型首个条目标题应为未知类型1，实际: ${itemAlpha1.title}`);
+    assert(itemAlpha1.title === 'application/x-custom-type-alpha', `未知类型在原本展示预览文本的地方展示其类型标签字符串，实际: ${itemAlpha1.title}`);
     assert(itemAlpha1.subtitle === '4 B', `未知类型副标题仅显示大小，实际: ${itemAlpha1.subtitle}`);
     assert(itemAlpha1.time !== null && itemAlpha1.time !== '', '未知类型条目必须展示复制时间');
     assert(itemAlpha1.iconName === 'application-x-generic-symbolic', '未知类型使用通用二进制图标');
@@ -3495,7 +3495,7 @@ await reporter.run('12.11 未知类型元数据raw分树与“未知类型1”�
 
     assert(getExtItemCount(ext) === 2, '未知类型 Beta 1 入库成功');
     const itemBeta1 = getExtItem(ext, 0);
-    assert(itemBeta1.title === '未知类型2', `新的未知类型标题应递增为未知类型2，实际: ${itemBeta1.title}`);
+    assert(itemBeta1.title === 'application/x-custom-type-beta', `新的未知类型标题展示其类型标签字符串，实际: ${itemBeta1.title}`);
     assert(itemBeta1.subtitle === '3 B', `未知类型2 副标题显示大小 3 B，实际: ${itemBeta1.subtitle}`);
     assert(itemBeta1.time !== null, '未知类型2 正常展示复制时间');
 
@@ -3510,7 +3510,7 @@ await reporter.run('12.11 未知类型元数据raw分树与“未知类型1”�
 
     assert(getExtItemCount(ext) === 3, '未知类型 Alpha 2 入库成功');
     const itemAlpha2 = getExtItem(ext, 0);
-    assert(itemAlpha2.title === '未知类型1', `同类型元数据仍使用相同类型编号未知类型1，实际: ${itemAlpha2.title}`);
+    assert(itemAlpha2.title === 'application/x-custom-type-alpha', `同类型元数据仍展示相同类型标签字符串，实际: ${itemAlpha2.title}`);
     assert(itemAlpha2.subtitle === '4 B', `大小为 4 B，实际: ${itemAlpha2.subtitle}`);
 
     // 验证两者进入同一棵前缀树并共享前缀 [0x01, 0x02]
@@ -3532,6 +3532,31 @@ await reporter.run('12.11 未知类型元数据raw分树与“未知类型1”�
     ext._restoreEntry(restoredEntry);
     assert(restoredEntry.mime === 'application/x-custom-type-alpha', '回灌保持原始声明的未知类型元数据');
     assert(restoredEntry.bytes.get_size() === 4, '回灌保持原始二进制数据大小');
+
+    // 6. 验证 SVG, GIF 与 Office 软件专有类型统一作为未知类型，并在原本展示预览处原样展示类型标签
+    // 6.1 SVG
+    const svgXml = '<svg width="10" height="10"><rect/></svg>';
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
+        new MockSelectionSource(['image/svg+xml'], new TextEncoder().encode(svgXml)));
+    const itemSvg = getExtItem(ext, 0);
+    assert(itemSvg.title === 'image/svg+xml', `SVG 作为未知类型原样展示类型标签，实际: ${itemSvg.title}`);
+    assert(itemSvg.hasThumbIcon === false, 'SVG 作为未知类型不生成缩略图');
+
+    // 6.2 GIF
+    const gifHeader = new Uint8Array([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 0x01, 0x00, 0x01, 0x00]);
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
+        new MockSelectionSource(['image/gif'], gifHeader));
+    const itemGif = getExtItem(ext, 0);
+    assert(itemGif.title === 'image/gif', `GIF 作为未知类型原样展示类型标签，实际: ${itemGif.title}`);
+    assert(itemGif.hasThumbIcon === false, 'GIF 作为未知类型不生成缩略图');
+
+    // 6.3 Office 专有格式 (如 LibreOffice ODT / MS Word DOCX)
+    const officeData = new Uint8Array([0x50, 0x4B, 0x03, 0x04, 0x14, 0x00]);
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
+        new MockSelectionSource(['application/vnd.oasis.opendocument.text'], officeData));
+    const itemOffice = getExtItem(ext, 0);
+    assert(itemOffice.title === 'application/vnd.oasis.opendocument.text', `Office专有类型展示类型标签，实际: ${itemOffice.title}`);
+    assert(itemOffice.hasThumbIcon === false, 'Office专有类型作为未知类型不生成缩略图');
 
     ext.disable();
 });
@@ -4321,6 +4346,16 @@ await reporter.run('16.1 网页/办公软件多 MIME 场景探测识别 (text/ht
     // 3. 优先级校验：若包含位图或文件，位图/文件依然保持更高优先级
     const imgWithHtml = detectCoreMime(['image/png', 'text/html', 'text/plain']);
     assert(imgWithHtml.type === 'image', '位图优先于 composite');
+
+    // 4. SVG、GIF 与 Office 软件专有类型作为非预览未知类型
+    const detectedSvg = detectCoreMime(['image/svg+xml']);
+    assert(detectedSvg.type === 'raw' && detectedSvg.mime === 'image/svg+xml', 'SVG 识别为未知类型 raw');
+
+    const detectedGif = detectCoreMime(['image/gif']);
+    assert(detectedGif.type === 'raw' && detectedGif.mime === 'image/gif', 'GIF 识别为未知类型 raw');
+
+    const detectedOffice = detectCoreMime(['application/vnd.oasis.opendocument.text']);
+    assert(detectedOffice.type === 'raw' && detectedOffice.mime === 'application/vnd.oasis.opendocument.text', 'Office专有类型识别为未知类型 raw');
 });
 
 await reporter.run('16.2 CMP1 纯内存二进制容器打包与解包 (无损双向转换与异常数据容错保护)', async () => {

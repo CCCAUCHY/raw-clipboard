@@ -8,8 +8,8 @@ const Utf8Decoder = new TextDecoder();
 function detectCoreMime(mimeTypes) {
     if (!mimeTypes || mimeTypes.length === 0) return null;
 
-    // 1. 位图图片类（仅常见位图支持缩略图预览；SVG 等矢量格式作为 raw 类型仅保留原始数据）
-    const imgMime = ['image/png', 'image/jpeg', 'image/webp', 'image/bmp', 'image/gif'].find(m => mimeTypes.includes(m));
+    // 1. 位图图片类（仅常见位图支持缩略图预览；SVG 等矢量格式与 GIF 动图作为未知类型仅保留原始数据）
+    const imgMime = ['image/png', 'image/jpeg', 'image/webp', 'image/bmp'].find(m => mimeTypes.includes(m));
     if (imgMime) return { mime: imgMime, type: 'image' };
 
     // 2. 复制文件列表 (Nautilus, Dolphin 等)
