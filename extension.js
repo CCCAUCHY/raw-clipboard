@@ -573,11 +573,25 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
         };
     }
 
+    let rawIcon = 'application-x-generic-symbolic';
+    if (mime) {
+        const lower = mime.toLowerCase();
+        if (lower.startsWith('image/')) rawIcon = 'image-x-generic-symbolic';
+        else if (lower.startsWith('audio/')) rawIcon = 'audio-x-generic-symbolic';
+        else if (lower.startsWith('video/')) rawIcon = 'video-x-generic-symbolic';
+        else if (lower.startsWith('font/')) rawIcon = 'font-x-generic-symbolic';
+        else if (lower.includes('spreadsheet') || lower.includes('excel') || lower.includes('sheet') || lower === 'text/csv') rawIcon = 'x-office-spreadsheet-symbolic';
+        else if (lower.includes('presentation') || lower.includes('powerpoint')) rawIcon = 'x-office-presentation-symbolic';
+        else if (lower === 'application/pdf' || lower.includes('document') || lower.includes('word')) rawIcon = 'x-office-document-symbolic';
+        else if (lower.includes('zip') || lower.includes('tar') || lower.includes('gzip') || lower.includes('7z') || lower.includes('compressed')) rawIcon = 'package-x-generic-symbolic';
+        else if (lower.includes('json') || lower.includes('xml') || lower.startsWith('text/')) rawIcon = 'text-x-generic-symbolic';
+    }
+
     const tag = mime || unknownTypeName || (isEn ? 'Unknown Type' : '未知类型');
     return {
         title: tag.length > 200 ? `${tag.slice(0, 200)}…` : tag,
         subtitle: sizeStr,
-        icon: 'application-x-generic-symbolic',
+        icon: rawIcon,
     };
 }
 
@@ -957,7 +971,7 @@ export default class RawClipboardExtension extends Extension {
             entryFormats.push({
                 mime: core.mime,
                 type: 'raw',
-                icon: 'application-x-generic-symbolic',
+                icon: previewInfo.icon || 'application-x-generic-symbolic',
                 label: unknownLabel || (isEn ? 'Unknown' : '未知类型'),
                 get bytes() { return entryRef.bytes; },
             });
