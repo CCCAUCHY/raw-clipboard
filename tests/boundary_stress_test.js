@@ -315,6 +315,9 @@ function assertThrows(fn, expectedErrorType, message) {
 
 // 辅助方法：读取扩展实例当前的条目总数与第一条预览信息
 function getExtItemCount(ext) {
+    if (ext._popup && ext._popup.visible) {
+        return ext._itemActors ? ext._itemActors.length : 0;
+    }
     ext._openPopup();
     const count = ext._itemActors ? ext._itemActors.length : 0;
     ext._closePopup();

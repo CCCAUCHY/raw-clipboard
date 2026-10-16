@@ -235,7 +235,8 @@ globalThis.global = {
     stage: { width: 1920, height: 1080 },
 };
 
-// 导入被测核心代码
+// 导入被测核心代码与 Mock Shell 主模块
+const Main = await import('resource:///org/gnome/shell/ui/main.js');
 const extModule = await import('../extension.js');
 const RawClipboardExtension = extModule.default;
 const RESTORE_NONCE = extModule.RESTORE_NONCE;
@@ -381,6 +382,9 @@ function assertThrows(fn, expectedErrorType, message) {
 }
 
 function getExtItemCount(ext) {
+    if (ext._popup && ext._popup.visible) {
+        return ext._itemActors ? ext._itemActors.length : 0;
+    }
     ext._openPopup();
     const count = ext._itemActors ? ext._itemActors.length : 0;
     ext._closePopup();
@@ -1289,14 +1293,14 @@ await reporter.run('6.6 目录与文件精准区分测试 (单目录、多目录
     assert(item.subtitle.includes('文件夹 · 1 项'), `单目录副标题实际: ${item.subtitle}`);
     assert(item.iconName === 'folder-symbolic', `单目录图标实际: ${item.iconName}`);
 
-    // 2. 复制真实存在的本地磁盘目录 (不带尾部斜杠，由 GLib.file_test 嗅探为目录)
-    const actualDirUri = 'copy\nfile:///home/vmuser/tmpfs/raw-clipboard\n';
+    // 2. 复制无尾部斜杠路径 (纯 URI 预览，绝不调用同步 GLib.file_test 阻塞 Shell 主线程)
+    const noSlashUri = 'copy\nfile:///home/vmuser/tmpfs/raw-clipboard\n';
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
-        new MockSelectionSource(['text/uri-list'], new TextEncoder().encode(actualDirUri)));
+        new MockSelectionSource(['text/uri-list'], new TextEncoder().encode(noSlashUri)));
     item = getExtItem(ext, 0);
-    assert(item.title === 'raw-clipboard', `实际磁盘目录名实际: ${item.title}`);
-    assert(item.subtitle.includes('文件夹 · 1 项'), `实际磁盘目录副标题实际: ${item.subtitle}`);
-    assert(item.iconName === 'folder-symbolic', `实际磁盘目录图标实际: ${item.iconName}`);
+    assert(item.title === 'raw-clipboard', `无斜杠文件名实际: ${item.title}`);
+    assert(item.subtitle.includes('文件 · 1 项'), `无斜杠副标题实际: ${item.subtitle}`);
+    assert(item.iconName === 'text-x-generic-symbolic', `无斜杠文件图标必须为 text-x-generic-symbolic，实际: ${item.iconName}`);
 
     // 3. 复制多个纯目录
     const multiDirUri = 'copy\nfile:///home/user/dir1/\nfile:///home/user/dir2/\nfile:///home/user/dir3/\n';
@@ -4891,6 +4895,180 @@ await reporter.run('16.7 左侧 48x48 扁平化正方形类型按钮多格式回
     assert(restoredHtmlSource.get_mimetypes()[0] === 'text/html', '回灌 MIME 必须为 text/html');
     assert(typeof restoredHtmlSource[RESTORE_NONCE] === 'string', '回灌源挂载防回环 RESTORE_NONCE');
 
+    ext.disable();
+});
+
+await reporter.run('12.16 RadixRawTree 内部单子节点收缩压缩测试 (淘汰前缀条目后自动合并，节点数与深度不无限膨胀)', async () => {
+    const tree = new RadixRawTree();
+    const enc = new TextEncoder();
+    const entries = [];
+
+    // 依次插入 'A', 'AA', 'AAA', 'AAAA', 'AAAAA'
+    for (let i = 1; i <= 10; i++) {
+        const text = 'A'.repeat(i);
+        const bytes = new GLib.Bytes(enc.encode(text));
+        const res = tree.insert('text/plain', bytes, leaf => ({ id: `E_${i}`, _radixNode: leaf }));
+        entries.push(res.newEntry);
+    }
+
+    // 删除前缀条目 'A', 'AA', 'AAA', 'AAAA', 'AAAAA'
+    for (let i = 0; i < 5; i++) {
+        tree.remove(entries[i]);
+    }
+
+    // 统计树中总节点数
+    let nodeCount = 0;
+    const stack = [tree.root];
+    while (stack.length > 0) {
+        const n = stack.pop();
+        nodeCount++;
+        for (const child of n.children.values()) {
+            stack.push(child);
+        }
+    }
+
+    // 剩余 5 个有效条目，中间被删除的单子节点必须已被压缩合并，节点总数应远小于 11
+    assert(nodeCount <= 7, `淘汰前缀后树中节点数必须收缩，实际节点数: ${nodeCount}`);
+});
+
+await reporter.run('12.17 复合条目纯单树存储与按需解包验证 (零闭包双份持久缓冲)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    const html = '<b>Bold text</b>';
+    const text = 'Bold text';
+    const source = new MockSelectionSource(['text/html', 'text/plain'], {
+        'text/html': new TextEncoder().encode(html),
+        'text/plain': new TextEncoder().encode(text),
+    });
+
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, source);
+    assert(ext._getVisibleEntries().length === 1, '复合条目入库成功');
+
+    const entry = ext._getEntry(0);
+    assert(entry.type === 'composite', '条目类型为 composite');
+    assert(entry.formats.length === 2, '包含 HTML 和 Text 两个格式');
+
+    // 验证 formats[0].bytes 和 formats[1].bytes 按需解包的正确性
+    const dec = new TextDecoder();
+    assert(dec.decode(entry.formats[0].bytes.get_data()) === html, '按需解包 HTML 格式一致');
+    assert(dec.decode(entry.formats[1].bytes.get_data()) === text, '按需解包 Text 格式一致');
+
+    ext.disable();
+});
+
+await reporter.run('12.18 KDE 标记读取取消与抢占时拒绝重复记录提升与软删除恢复测试', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 1. 先保存文件 A，再保存文本 B
+    const fileA = 'copy\nfile:///home/user/docA.txt\n';
+    const srcA = new MockSelectionSource(['text/uri-list', 'application/x-kde-cutselection'], {
+        'text/uri-list': new TextEncoder().encode(fileA),
+        'application/x-kde-cutselection': new TextEncoder().encode('0'),
+    });
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcA);
+
+    const textB = 'Text B';
+    const srcB = new MockSelectionSource(['text/plain'], new TextEncoder().encode(textB));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcB);
+
+    assert(ext._getEntry(0).preview === 'Text B', '当前队首为 B');
+    assert(ext._getEntry(1).preview === 'docA.txt', '当前第二项为 A');
+
+    // 将 A 软删除
+    const entryA = ext._getEntry(1);
+    ext._deleteEntry(entryA);
+    assert(ext._getVisibleEntries().length === 1, '删除后仅剩 B 可见');
+
+    // 2. 模拟重新复制 A，但在读取 KDE 标记时外部取消/易手
+    const cancelSource = new MockSelectionSource(['text/uri-list', 'application/x-kde-cutselection'], {
+        'text/uri-list': new TextEncoder().encode(fileA),
+        get 'application/x-kde-cutselection'() {
+            // 在读取标记时取消扩展 cancellable
+            ext._cancellable.cancel();
+            return new TextEncoder().encode('0');
+        }
+    });
+
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, cancelSource);
+
+    // 验证：软删除的 A 绝不能被恢复，历史队列顺序亦不可被篡改
+    assert(ext._getVisibleEntries().length === 1, '取消后被删除条目绝不恢复');
+    assert(ext._getVisibleEntries()[0].preview === 'Text B', 'B 依然保持在队首');
+
+    ext.disable();
+});
+
+await reporter.run('12.19 空列表键盘操作与未渲染条目防御测试', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 打开空弹窗
+    ext._openPopup();
+    assert(ext._getSelectedEntry() === null, '空列表无选中项返回 null');
+
+    // 后台入库新条目，但界面尚未 idle 重绘
+    const src = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Unrendered Item'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src);
+
+    // 在重绘前按键，_getSelectedEntry() 必须严格返回 null，不能返回后台未渲染的新条目
+    assert(ext._getSelectedEntry() === null, '未渲染槽位时 _getSelectedEntry 严格返回 null');
+
+    ext._closePopup();
+    ext.disable();
+});
+
+await reporter.run('12.20 副屏右键菜单边界与多显示器定位测试', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 模拟多显示器环境
+    const origMonitors = Main.layoutManager.monitors;
+    const origPrimary = Main.layoutManager.primaryMonitor;
+
+    Main.layoutManager.monitors = [
+        { x: 0, y: 0, width: 1920, height: 1080 },
+        { x: 1920, y: 0, width: 1920, height: 1080 }
+    ];
+    Main.layoutManager.primaryMonitor = Main.layoutManager.monitors[0];
+
+    // 入库条目并打开弹窗
+    const src = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Monitor Test'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src);
+    ext._openPopup();
+
+    // 在副屏 (2200, 500) 触发右键菜单
+    const dummyEntry = ext._getEntry(0);
+    ext._openContextMenu(dummyEntry, 2200, 500);
+
+    const menu = ext._contextMenu;
+    assert(menu !== null, '右键菜单已创建');
+    assert(menu.x >= 1920, `副屏菜单 X 坐标 (${menu.x}) 必须位于副屏 (>=1920)，绝不可跳回主屏`);
+
+    ext._closeContextMenu();
+    ext._closePopup();
+
+    Main.layoutManager.monitors = origMonitors;
+    Main.layoutManager.primaryMonitor = origPrimary;
+    ext.disable();
+});
+
+await reporter.run('13.8 搜索框 BackSpace 删除非 BMP 字符 (Unicode Emoji 完整移除不撕裂) 测试', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+    ext._openPopup();
+
+    // 唤起搜索并输入含非 BMP 字符的字符串 'ab😀'
+    ext._inSearchMode = true;
+    ext._searchQuery = 'ab😀';
+
+    // 按 BackSpace
+    ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_BackSpace, get_state: () => 0 });
+
+    assert(ext._searchQuery === 'ab', `退格必须完整删除整个 Emoji '😀'，实际搜索词: '${ext._searchQuery}'`);
+
+    ext._closePopup();
     ext.disable();
 });
 
