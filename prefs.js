@@ -343,19 +343,31 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
         const guideRows = [
             {
                 title: '选择与粘贴\nSelect and Paste',
-                subtitle: '使用方向键 ↑ / ↓ 移动选中条目（支持首尾循环），按 Enter 键、空格键或鼠标点击，将其注入系统剪贴板。\nUse Arrow Keys ↑ / ↓ to navigate items (with wrap-around), press Enter, Space, or click to inject into the system clipboard.',
+                subtitle: '使用方向键 ↑ / ↓ 移动选中条目（支持首尾循环），按 Enter 键、空格键或鼠标点击，将其注入系统剪贴板；键盘操作严格以屏幕当前选中的条目身份执行，即使后台新捕获条目也绝不错位。\nUse Arrow Keys ↑ / ↓ to navigate items (with wrap-around), press Enter, Space, or click to inject into the system clipboard; keyboard actions strictly bind to the visibly selected item identity against background concurrency.',
             },
             {
-                title: '滚动与翻页\nScroll and Page',
-                subtitle: '当历史超过 8 项时，使用鼠标滚轮上下滚动，或按方向键 ← / →（或 PageUp / PageDown）快速翻页；支持循环翻页并具备防误触保护：在第一页向上翻页或末页向下翻页时，首次操作不翻页并在页码左侧提示“循环？”，第二次操作才执行跨页并恢复正常页码显示。\nWhen history exceeds 8 items, use mouse wheel to scroll, or press Arrow Keys ← / → (or PageUp / PageDown) to flip pages; supports circular paging with anti-misoperation protection: scrolling up on the first page or down on the last page prompts "循环？" on the left of page badge on the first trigger without flipping, and performs the page flip restoring normal page count on the second consecutive trigger.',
+                title: '触控板手势与滚轮翻页\nTouchpad Gesture and Wheel Scroll',
+                subtitle: '当历史超过 8 项时，支持触控板手势或鼠标滚轮翻页，亦可按方向键 ← / →（或 PageUp / PageDown）快速翻页：\n• 触控板单次划动锁步：双指轻划稳翻一页（One Swipe = Exactly One Page），彻底杜绝失控连翻；抬手或静止 180ms 即刻开启下一手势，滑动中反向立即响应；\n• 机械滚轮防抖：带齿物理鼠标滚轮一格一页，带 60ms 极速防抖；\n• 首尾循环翻页防误触：在第一页向上翻页或末页向下翻页时，首次操作不翻页并在页码左侧提示“循环？”，第二次同向操作才执行跨页并恢复正常页码。\nWhen history exceeds 8 items, use touchpad gestures or mouse wheel to flip pages, or press Arrow Keys ← / → (or PageUp / PageDown):\n• Touchpad Gesture Lockstep: single two-finger swipe flips exactly one page (One Swipe = Exactly One Page) preventing runaway scrolling; finger release or 180ms pause arms the next swipe with instant reversal response;\n• Mouse Wheel Debounced: notched wheel responds instantly with mechanical debounce;\n• Circular Paging Anti-Misoperation: scrolling up on the first page or down on the last page prompts "循环？" on the first trigger without flipping, and performs the page flip on the second consecutive trigger.',
             },
             {
                 title: '多种排序方式\nMultiple Sort Modes',
-                subtitle: '弹窗顶部提供 4 种排序切换方式（记录顺序、大小、类型、首字母），支持点击顶栏胶囊按钮或按 Tab 键（Shift+Tab 反向）循环切换：\n• 记录顺序：按条目复制时间排序，最新入队或重复复制项排在队首；\n• 大小：按数据容量字节大小由大到小降序排列；\n• 类型：按内容类型分组优先排列（文本优先，其次为网页、图片及自定义未知类型）；\n• 首字母：英文条目按 A-Z 优先排列，非英文字符与其它语言排在英文后面并按记录顺序排列。\nTop bar provides 4 sorting modes (Record Order, Size, Type, Initial Letter), supporting click on top capsules or Tab (Shift+Tab) cycling:\n• Record Order: sorted by copy timestamp, newest items first;\n• Size: descending order by raw byte size;\n• Type: grouped by data type (text, html, image, custom/unknown);\n• Initial Letter: English items sorted A-Z first, followed by others in record order.',
+                subtitle: '弹窗顶部提供 4 种排序切换方式（记录顺序、大小、类型、首字母），支持点击顶栏胶囊按钮或按 Tab 键（Shift+Tab 反向）循环切换：\n• 记录顺序：按条目复制时间排序，最新入队或重复复制项排在队首；\n• 大小：按数据容量字节大小由大到小降序排列；\n• 类型：按内容类型分组优先排列（文本优先，其次为复合/多类型、网页、文件、位图及未知类型）；\n• 首字母：英文条目按 A-Z 优先排列，非英文字符与其它语言排在英文后面并按记录顺序排列。\nTop bar provides 4 sorting modes (Record Order, Size, Type, Initial Letter), supporting click on top capsules or Tab (Shift+Tab) cycling:\n• Record Order: sorted by copy timestamp, newest items first;\n• Size: descending order by raw byte size;\n• Type: grouped by data type (text, composite/multi-type, html, files, image, unknown);\n• Initial Letter: English items sorted A-Z first, followed by others in record order.',
+            },
+            {
+                title: '左侧类型按钮与多类型选择回灌\nType Buttons and Multi-Type Selection',
+                subtitle: '条目左侧采用 48x48 扁平化正方形区域，直观展示数据格式；对于网页或办公软件复制的多类型条目（同时包含富文本 HTML 与纯文本），并排提供两个 48x48 正方形按钮：\n• 点击富文本图标：直接以 HTML 富文本格式回灌系统剪贴板，完整保留排版与样式；\n• 点击纯文本图标：直接换用纯文本类型标签回灌，轻松绕过终端或部分编辑器不收 HTML 的类型门禁；\n• 点击条目主体或按回车：以首选格式原样回灌。\nEach item features a 48x48 flat square button area on the left showing its data type; for multi-type items copied from browsers/office suites (containing both HTML and plain text), two side-by-side buttons are displayed:\n• Click Rich Text Icon: injects as HTML to preserve layout and styles;\n• Click Plain Text Icon: injects as plain text to bypass app gates that reject HTML;\n• Click Item Content or Press Enter: injects in the primary format.',
+            },
+            {
+                title: '鼠标右键菜单 (带入搜索与复制文本)\nRight-Click Context Menu (Search & Copy Text)',
+                subtitle: '在任意历史条目上点击鼠标右键即可弹出上下文菜单：\n• 带入搜索 (Search Preview)：将该条目预览内容的前 64 字符填入搜索框并立即检索；\n• 复制文本 (Copy Text)：对富文本、文件列表、未知类型等能以文本形式预览的条目开放，遵循“原样进出”原则直接换纯文本类型标签注入系统剪贴板，并在队首新增一条纯文本记录；\n• 边界保护：具备屏幕边缘防溢出处理，按 Esc 键或点击弹窗内外部空白处可优先安全关闭菜单。\nRight-click on any item to open the context menu:\n• Search Preview: fills the first 64 characters of the item preview into search bar for instant search;\n• Copy Text: available for rich text, file lists, and unknown types that preview as text; swaps type tag to text directly without destructive modification, preserving original data and injecting a text entry at the top;\n• Boundary Protection: protected against screen overflow; press Esc or click empty space to safely close.',
             },
             {
                 title: '预览内搜索\nSearch Previews',
-                subtitle: '在弹窗中直接键入任意字符，将自动唤出搜索栏替代排序选项卡，实时匹配文本、富文本和文件列表的预览内容：\n• 关键字匹配：仅对能以文本形式预览的项目按预览内容进行关键字搜索，结果按记录顺序排列；\n• 纯键盘直接响应：纯键盘驱动无光标，设 128 字符上限防止内存膨胀，禁用输入法以彻底根除输入法候选框遮挡与首字母遗漏缺陷；\n• 图标点击检索：条目左侧图标悬停显示搜索放大镜，点击即可将该条目预览内容的前 64 字符带入搜索框并覆盖已有内容（在搜索状态下亦可点击已检索条目的左侧图标带入覆盖）；\n• 列表导航：键入搜索时，按 ↑ / ↓ 可直接在下方搜索结果列表中移动选择，Enter 确认恢复选中项并关闭弹窗；\n• 退出搜索：鼠标点击搜索栏自身、弹窗外任意区域、或弹窗内非历史记录项目区域，或者按 Esc 键，将退出搜索状态回到完整列表；\n• 删光搜索词：BackSpace 删光字符时不会退出搜索状态，而是显示“无匹配项目”；\n• 循环翻页：搜索结果列表依然完整支持 PageUp / PageDown 循环翻页（同享首末页二次操作防误触保护）。\nType any character in the popup to automatically reveal the search bar replacing sort tabs, matching preview text in real-time:\n• Keyword Matching: searches preview content of text, html, and file lists; results sorted in record order;\n• Pure Keyboard-Driven: disables IME to eliminate candidate window occlusion and GNOME first-letter-drop bugs, capped at 128 chars;\n• Icon Click-to-Search: hover item icon to show search magnifier, click to populate first 64 chars of preview text into search bar replacing query;\n• List Navigation: press ↑ / ↓ to navigate search results directly, Enter to restore and close popup;\n• Exit Search: click the search bar, click outside, click non-item areas, or press Esc to exit search mode;\n• Cleared Input: erasing all characters stays in search mode showing "No matching items";\n• Circular Pagination: search results fully support PageUp / PageDown circular pagination with the same anti-misoperation protection.',
+                subtitle: '在弹窗中直接键入任意字符，将自动唤出搜索栏替代排序选项卡，实时匹配文本、富文本、文件列表及未知类型的预览内容：\n• 关键字匹配：支持所有能以文本形式预览的项目，位图类型不参与匹配，结果以记录顺序排列；\n• 纯键盘直接响应：纯键盘驱动无光标，设 128 字符上限防止内存膨胀，彻底禁用输入法从根源杜绝候选框遮挡与首字母遗漏缺陷；\n• 列表导航：键入搜索时按 ↑ / ↓ 可直接在搜索结果列表中移动选择，Enter 确认恢复选中项并关闭弹窗；\n• 退出搜索：鼠标点击搜索栏自身、弹窗外任意区域、弹窗内非历史记录项目区域，或者按 Esc 键均可退出搜索状态回到完整列表；\n• 删光搜索词：BackSpace 删光字符时不会退出搜索状态，而是显示“无匹配项目”；\n• 循环翻页：搜索结果列表依然完整支持 PageUp / PageDown 循环翻页（同享首末页二次操作防误触保护）。\nType any character in the popup to automatically reveal the search bar replacing sort tabs, matching preview text in real-time:\n• Keyword Matching: searches preview content of all text-previewable items; results sorted in record order;\n• Pure Keyboard-Driven: disables IME to eliminate candidate window occlusion and first-letter-drop bugs, capped at 128 chars;\n• List Navigation: press ↑ / ↓ to navigate search results directly, Enter to restore and close popup;\n• Exit Search: click the search bar, click outside, click non-item areas, or press Esc to exit search mode;\n• Cleared Input: erasing all characters stays in search mode showing "No matching items";\n• Circular Pagination: search results fully support PageUp / PageDown circular pagination with the same anti-misoperation protection.',
+            },
+            {
+                title: '未知类型原样保留与剪切拦截\nUnknown Types & Cut Protection',
+                subtitle: '对 SVG、Office 专有格式或系统自定义未知类型，统一作为 raw 二进制流无损保留，在预览区原样展示其 MIME 类型标签字符串帮助识别，并开放搜索与复制文本；严格识别并拦截剪切文件（Ctrl+X），同时精准区分 KDE（标记 0）与 GNOME 的普通复制文件并放行入库。\nFor SVG, Office proprietary formats, or custom types, raw binary data is preserved losslessly, displaying their MIME type string in the preview area with search and copy text support; file cut operations (Ctrl+X) are intercepted while KDE (marker 0) and GNOME ordinary copies are safely permitted.',
             },
             {
                 title: '复制时间\nCopy Timestamp',
@@ -363,11 +375,11 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
             },
             {
                 title: '删除条目与撤销\nDelete and Undo',
-                subtitle: '点击条目右侧的删除按钮，或选中后按 Delete / Backspace 键删除；误删可按 Ctrl+Z 快捷撤销\nClick the delete button on the right or press Delete / Backspace to remove; press Ctrl+Z to undo accidental deletion.',
+                subtitle: '点击条目右侧 48x48 扁平化正方形垃圾桶按钮，或选中后按 Delete / Backspace 键删除；操作严格绑定到屏幕当前可见选中的条目身份；误删可按 Ctrl+Z 快捷撤销。\nClick the 48x48 flat square trash button or press Delete / Backspace to remove; operations strictly bind to the visibly selected item identity against background concurrency; press Ctrl+Z to undo.',
             },
             {
                 title: '关闭窗口\nClose Window',
-                subtitle: '按 Esc 键或点击窗口外部任意区域即可随时关闭（若处于搜索状态，则优先退出搜索状态）\nPress Esc or click outside the window to close at any time (exits search mode first if active).',
+                subtitle: '按 Esc 键或点击窗口外部任意区域即可随时关闭（若处于右键菜单或搜索状态，则优先退出菜单或搜索状态）。\nPress Esc or click outside the window to close at any time (exits context menu or search mode first if active).',
             },
             {
                 title: '多语言切换\nLanguage Switch',
@@ -375,7 +387,7 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
             },
             {
                 title: '隐私与安全保护\nPrivacy and Security',
-                subtitle: '所有剪贴板内容仅保存在当前内存中，关机或注销自动销毁；复制文件时仅记录路径，不重复读取磁盘文件\nAll clipboard contents are kept in memory only and destroyed on shutdown or logout; copying files records paths only with zero duplicate disk reads.',
+                subtitle: '所有剪贴板内容仅保存在当前内存中，关机或注销自动销毁；复制文件时仅记录路径，不重复读取磁盘文件。\nAll clipboard contents are kept in memory only and destroyed on shutdown or logout; copying files records paths only with zero duplicate disk reads.',
             },
         ];
 
