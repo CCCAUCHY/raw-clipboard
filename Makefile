@@ -18,7 +18,7 @@ test: schemas mock-resource
 	GSETTINGS_BACKEND=memory LD_LIBRARY_PATH=/usr/lib/mutter-51:/usr/lib/gnome-shell GI_TYPELIB_PATH=/usr/lib/gnome-shell/girepository-1.0:/usr/lib/mutter-51:/usr/lib/gnome-shell gjs -m tests/full_functional_and_boundary_stress_test.js
 
 pack: schemas
-	gnome-extensions pack --extra-source=stylesheet.css --force
+	gnome-extensions pack --extra-source=stylesheet.css --extra-source=icons --force
 
 clean:
 	rm -f schemas/gschemas.compiled tests/mock.gresource

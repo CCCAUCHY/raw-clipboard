@@ -913,7 +913,7 @@ await reporter.run('4.6 畸形 URI 序列解析容错 (decodeURIComponent 触发
     const item = getExtItem(ext, 0);
     assert(item.title === '%E0%, test.txt', `畸形 URI 应容错保留原文本并正常显示文件名，实际: ${item.title}`);
     assert(item.subtitle.includes('2 项'), '副标题应统计条目数');
-    assert(item.iconName === 'text-x-generic-symbolic', '图标应维持为文件类型');
+    assert(item.iconName === 'folder-symbolic', '图标应维持为文件类型');
 
     ext.disable();
 });
@@ -1265,11 +1265,11 @@ await reporter.run('6.5 敏感凭据/密码捕获测试 (密码管理器文本�
     ext.disable();
 });
 
-await reporter.run('6.6 目录与文件精准区分测试 (单目录、多目录、单文件、多文件与真实磁盘目录嗅探)', async () => {
+await reporter.run('6.6 目录与文件统一 folder-symbolic 图标测试 (单目录、多目录、单文件、多文件统一使用文件管理器图标)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
-    // 1. 复制单目录 (尾部带 / 的显式目录)
+    // 1. 复制单目录
     const singleDirUri = 'copy\nfile:///home/user/my_folder/\n';
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
         new MockSelectionSource(['text/uri-list'], new TextEncoder().encode(singleDirUri)));
@@ -1278,16 +1278,16 @@ await reporter.run('6.6 目录与文件精准区分测试 (单目录、多目录
     assert(item.subtitle.includes('文件夹 · 1 项'), `单目录副标题实际: ${item.subtitle}`);
     assert(item.iconName === 'folder-symbolic', `单目录图标实际: ${item.iconName}`);
 
-    // 2. 复制无尾部斜杠路径 (纯 URI 预览，绝不调用同步 GLib.file_test 阻塞 Shell 主线程)
+    // 2. 复制无尾部斜杠路径
     const noSlashUri = 'copy\nfile:///home/vmuser/tmpfs/raw-clipboard\n';
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
         new MockSelectionSource(['text/uri-list'], new TextEncoder().encode(noSlashUri)));
     item = getExtItem(ext, 0);
     assert(item.title === 'raw-clipboard', `无斜杠文件名实际: ${item.title}`);
     assert(item.subtitle.includes('文件 · 1 项'), `无斜杠副标题实际: ${item.subtitle}`);
-    assert(item.iconName === 'text-x-generic-symbolic', `无斜杠文件图标必须为 text-x-generic-symbolic，实际: ${item.iconName}`);
+    assert(item.iconName === 'folder-symbolic', `无斜杠文件图标统一为 folder-symbolic，实际: ${item.iconName}`);
 
-    // 3. 复制多个纯目录
+    // 3. 复制多个目录
     const multiDirUri = 'copy\nfile:///home/user/dir1/\nfile:///home/user/dir2/\nfile:///home/user/dir3/\n';
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
         new MockSelectionSource(['text/uri-list'], new TextEncoder().encode(multiDirUri)));
@@ -1296,14 +1296,14 @@ await reporter.run('6.6 目录与文件精准区分测试 (单目录、多目录
     assert(item.subtitle.includes('文件夹 · 3 项'), `多目录副标题实际: ${item.subtitle}`);
     assert(item.iconName === 'folder-symbolic', `多目录图标实际: ${item.iconName}`);
 
-    // 4. 复制普通文件 (text-x-generic-symbolic)
+    // 4. 复制普通文件 (folder-symbolic)
     const singleFileUri = 'copy\nfile:///home/user/regular_file.txt\n';
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
         new MockSelectionSource(['text/uri-list'], new TextEncoder().encode(singleFileUri)));
     item = getExtItem(ext, 0);
     assert(item.title === 'regular_file.txt', `单文件名实际: ${item.title}`);
     assert(item.subtitle.includes('文件 · 1 项'), `单文件副标题实际: ${item.subtitle}`);
-    assert(item.iconName === 'text-x-generic-symbolic', `单文件图标必须为 text-x-generic-symbolic，实际: ${item.iconName}`);
+    assert(item.iconName === 'folder-symbolic', `单文件图标统一为 folder-symbolic，实际: ${item.iconName}`);
 
     ext.disable();
 });
@@ -3540,7 +3540,7 @@ await reporter.run('12.11 未知类型统一（包含SVG/GIF/Office专有格式�
     assert(itemAlpha1.title === 'application/x-custom-type-alpha', `未知类型在原本展示预览文本的地方展示其类型标签字符串，实际: ${itemAlpha1.title}`);
     assert(itemAlpha1.subtitle === '4 B', `未知类型副标题仅显示大小，实际: ${itemAlpha1.subtitle}`);
     assert(itemAlpha1.time !== null && itemAlpha1.time !== '', '未知类型条目必须展示复制时间');
-    assert(itemAlpha1.iconName === 'application-x-generic-symbolic', '未知类型使用通用二进制图标');
+    assert(itemAlpha1.iconName === 'edit-copy-symbolic', '未知类型使用通用复制图标');
 
     // 验证 Radix 前缀树按元数据的 raw 数据分树
     assert(ext._radixTree.hasRoot('application/x-custom-type-alpha'), 'Radix树为 application/x-custom-type-alpha 分配专属独立根节点');
@@ -4173,7 +4173,7 @@ await reporter.run('13.7 纯键盘直接响应与条目左侧图标悬停搜索/
     assert(ext._inSearchMode === false, '退出搜索模式');
     assert(ext._itemSlots[0].currentEntry.preview === 'English Note', '第0槽位为最新加入的 English Note');
     const slot0Icon = ext._itemSlots[0].iconActor;
-    assert(slot0Icon.icon_name === 'edit-copy-symbolic', '显示默认类型图标');
+    assert(slot0Icon.icon_name === 'lang-typedef-symbolic', '显示文本类型图标');
     assert(slot0Icon.reactive === false, '左侧图标彻底设为非 reactive，废除原有悬停/点击搜索');
 
     // 5. 右键长条目 (150 字符的 'A'...)：弹出右键菜单，点击“带入搜索”只带入前 64 字符并覆盖搜索框

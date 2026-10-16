@@ -601,7 +601,7 @@ await reporter.run('3.6 畸形 URI 序列解析容错 (decodeURIComponent 触发
     const item = getExtItem(ext, 0);
     assert(item.title === '%E0%, test.txt', `畸形 URI 容错解码保留原文本并提取文件名，实际: ${item.title}`);
     assert(item.subtitle.includes('2 项'), '副标题应统计条目数');
-    assert(item.iconName === 'text-x-generic-symbolic', '图标应维持为文件类型');
+    assert(item.iconName === 'folder-symbolic', '图标应维持为文件类型');
 
     ext.disable();
 });

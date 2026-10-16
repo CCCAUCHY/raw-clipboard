@@ -19,6 +19,12 @@ export const OVERALL_TIMEOUT_MS = 15000;
 export const MAX_SEARCH_QUERY_LEN = 128;
 export const MAX_SEARCH_IMPORT_LEN = 64;
 
+export const ICON_TEXT = 'lang-typedef-symbolic';
+export const ICON_HTML = 'code-symbolic';
+export const ICON_FILES = 'folder-symbolic';
+export const ICON_IMAGE = 'image-x-generic-symbolic';
+export const ICON_RAW = 'edit-copy-symbolic';
+
 export const Utf8Decoder = new TextDecoder();
 
 export function callAsync(target, asyncMethod, finishMethod, ...args) {
@@ -488,7 +494,7 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
         return {
             title: clean.length > 1000 ? `${clean.slice(0, 1000)}…` : (clean || (isEn ? '(Empty text)' : '(空文本)')),
             subtitle: `${isEn ? 'Multi-type' : '多类型'} · ${sizeStr}`,
-            icon: 'text-html-symbolic',
+            icon: ICON_HTML,
         };
     }
 
@@ -497,7 +503,7 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
         return {
             title: clean.length > 1000 ? `${clean.slice(0, 1000)}…` : (clean || (isEn ? '(Empty text)' : '(空文本)')),
             subtitle: `${type === 'html' ? (isEn ? 'HTML' : '富文本') : (isEn ? 'Text' : '文本')} · ${sizeStr}`,
-            icon: type === 'html' ? 'text-html-symbolic' : 'edit-copy-symbolic',
+            icon: type === 'html' ? ICON_HTML : ICON_TEXT,
         };
     }
 
@@ -511,7 +517,7 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
                 return {
                     title: isEn ? 'File List' : '文件列表',
                     subtitle: isEn ? 'Files · 0 items (path only, no disk read)' : '文件 · 0 项 (仅存路径，不读内容)',
-                    icon: 'text-x-generic-symbolic',
+                    icon: ICON_FILES,
                 };
             }
             let totalCount = lines.length, isCapped = false;
@@ -545,7 +551,6 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
 
             const isAllDir = dirCount === totalCount;
             const isMixed = dirCount > 0 && !isAllDir;
-            const icon = dirCount > 0 ? 'folder-symbolic' : 'text-x-generic-symbolic';
             const label = isAllDir ? (isEn ? 'Folders' : '文件夹') : (isMixed ? (isEn ? 'Files/Folders' : '文件/目录') : (isEn ? 'Files' : '文件'));
             const countStr = isCapped ? `${totalCount}+` : `${totalCount}`;
             const suffix = isAllDir ? (isEn ? `and ${countStr} folders` : `等 ${countStr} 个文件夹`) : (isMixed ? (isEn ? `and ${countStr} items` : `等 ${countStr} 项`) : (isEn ? `and ${countStr} files` : `等 ${countStr} 个文件`));
@@ -554,13 +559,13 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
             return {
                 title,
                 subtitle: isEn ? `${label} · ${countStr} items (path only, no disk read)` : `${label} · ${countStr} 项 (仅存路径，不读内容)`,
-                icon,
+                icon: ICON_FILES,
             };
         } catch {
             return {
                 title: isEn ? `File List (${sizeStr})` : `文件列表 (${sizeStr})`,
                 subtitle: mime,
-                icon: 'text-x-generic-symbolic',
+                icon: ICON_FILES,
             };
         }
     }
@@ -569,29 +574,15 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
         return {
             title: isEn ? `Image (${sizeStr})` : `图片 (${sizeStr})`,
             subtitle: mime,
-            icon: 'image-x-generic-symbolic',
+            icon: ICON_IMAGE,
         };
-    }
-
-    let rawIcon = 'application-x-generic-symbolic';
-    if (mime) {
-        const lower = mime.toLowerCase();
-        if (lower.startsWith('image/')) rawIcon = 'image-x-generic-symbolic';
-        else if (lower.startsWith('audio/')) rawIcon = 'audio-x-generic-symbolic';
-        else if (lower.startsWith('video/')) rawIcon = 'video-x-generic-symbolic';
-        else if (lower.startsWith('font/')) rawIcon = 'font-x-generic-symbolic';
-        else if (lower.includes('spreadsheet') || lower.includes('excel') || lower.includes('sheet') || lower === 'text/csv') rawIcon = 'x-office-spreadsheet-symbolic';
-        else if (lower.includes('presentation') || lower.includes('powerpoint')) rawIcon = 'x-office-presentation-symbolic';
-        else if (lower === 'application/pdf' || lower.includes('document') || lower.includes('word')) rawIcon = 'x-office-document-symbolic';
-        else if (lower.includes('zip') || lower.includes('tar') || lower.includes('gzip') || lower.includes('7z') || lower.includes('compressed')) rawIcon = 'package-x-generic-symbolic';
-        else if (lower.includes('json') || lower.includes('xml') || lower.startsWith('text/')) rawIcon = 'text-x-generic-symbolic';
     }
 
     const tag = mime || unknownTypeName || (isEn ? 'Unknown Type' : '未知类型');
     return {
         title: tag.length > 200 ? `${tag.slice(0, 200)}…` : tag,
         subtitle: sizeStr,
-        icon: rawIcon,
+        icon: ICON_RAW,
     };
 }
 
@@ -924,14 +915,14 @@ export default class RawClipboardExtension extends Extension {
             entryFormats.push({
                 mime: core.htmlMime || 'text/html',
                 type: 'html',
-                icon: 'text-html-symbolic',
+                icon: ICON_HTML,
                 label: isEn ? 'HTML' : '富文本',
                 get bytes() { return entryRef.htmlBytes; },
             });
             entryFormats.push({
                 mime: core.textMime || 'text/plain',
                 type: 'text',
-                icon: 'edit-copy-symbolic',
+                icon: ICON_TEXT,
                 label: isEn ? 'Text' : '纯文本',
                 get bytes() { return entryRef.textBytes; },
             });
@@ -939,7 +930,7 @@ export default class RawClipboardExtension extends Extension {
             entryFormats.push({
                 mime: core.mime,
                 type: 'text',
-                icon: 'edit-copy-symbolic',
+                icon: ICON_TEXT,
                 label: isEn ? 'Text' : '纯文本',
                 get bytes() { return entryRef.bytes; },
             });
@@ -947,7 +938,7 @@ export default class RawClipboardExtension extends Extension {
             entryFormats.push({
                 mime: 'text/html',
                 type: 'html',
-                icon: 'text-html-symbolic',
+                icon: ICON_HTML,
                 label: isEn ? 'HTML' : '富文本',
                 get bytes() { return entryRef.bytes; },
             });
@@ -955,7 +946,7 @@ export default class RawClipboardExtension extends Extension {
             entryFormats.push({
                 mime: core.mime,
                 type: 'files',
-                icon: previewInfo.icon || 'text-x-generic-symbolic',
+                icon: ICON_FILES,
                 label: isEn ? 'Files' : '文件',
                 get bytes() { return entryRef.bytes; },
             });
@@ -963,7 +954,7 @@ export default class RawClipboardExtension extends Extension {
             entryFormats.push({
                 mime: core.mime,
                 type: 'image',
-                icon: 'image-x-generic-symbolic',
+                icon: ICON_IMAGE,
                 label: isEn ? 'Image' : '图片',
                 get bytes() { return entryRef.bytes; },
             });
@@ -971,7 +962,7 @@ export default class RawClipboardExtension extends Extension {
             entryFormats.push({
                 mime: core.mime,
                 type: 'raw',
-                icon: previewInfo.icon || 'application-x-generic-symbolic',
+                icon: ICON_RAW,
                 label: unknownLabel || (isEn ? 'Unknown' : '未知类型'),
                 get bytes() { return entryRef.bytes; },
             });
@@ -1595,7 +1586,7 @@ export default class RawClipboardExtension extends Extension {
             conversions.push({
                 targetType: 'text',
                 label: isEn ? 'Copy Text' : '复制文本',
-                icon: 'edit-copy-symbolic',
+                icon: ICON_TEXT,
             });
         }
         return conversions;
@@ -2249,7 +2240,7 @@ export default class RawClipboardExtension extends Extension {
         // 2. 格式转换 (复制文本)
         const conversions = this._getAvailableConversions(entry);
         for (const conv of conversions) {
-            const convBtn = createMenuItem(conv.icon || 'format-text-plaintext-symbolic', conv.label, () => {
+            const convBtn = createMenuItem(conv.icon || ICON_TEXT, conv.label, () => {
                 this._convertEntry(entry, conv.targetType);
             });
             menu.add_child(convBtn);
@@ -2609,14 +2600,27 @@ export default class RawClipboardExtension extends Extension {
                 slot.currentIconName = null;
             }
         } else {
-            const iconName = fmt0.icon || entry.icon || 'edit-copy-symbolic';
-            if (slot.currentIconName !== iconName || slot.currentGIcon !== null) {
-                slot.typeBtn0._icon.gicon = null;
+            const resolveIcon = (name) => {
+                const defaultName = name || ICON_RAW;
+                if (this.path) {
+                    const localSvg = GLib.build_filenamev([this.path, 'icons', `${defaultName}.svg`]);
+                    if (GLib.file_test(localSvg, GLib.FileTest.EXISTS)) {
+                        try {
+                            return { gicon: Gio.icon_new_for_string(localSvg), iconName: defaultName };
+                        } catch {}
+                    }
+                }
+                return { gicon: null, iconName: defaultName };
+            };
+
+            const { gicon, iconName } = resolveIcon(fmt0.icon || entry.icon);
+            if (slot.currentIconName !== iconName || slot.currentGIcon !== gicon) {
+                slot.typeBtn0._icon.gicon = gicon;
                 slot.typeBtn0._icon.icon_name = iconName;
                 slot.typeBtn0._icon.style_class = 'raw-clipboard-item-icon';
                 slot.typeBtn0._icon.icon_size = 20;
                 slot.currentIconName = iconName;
-                slot.currentGIcon = null;
+                slot.currentGIcon = gicon;
             }
         }
         slot.typeBtn0.show();
@@ -2624,8 +2628,16 @@ export default class RawClipboardExtension extends Extension {
         if (formats.length > 1) {
             const fmt1 = formats[1];
             slot.typeBtn1._targetMime = fmt1.mime;
-            slot.typeBtn1._icon.gicon = null;
-            slot.typeBtn1._icon.icon_name = fmt1.icon || 'edit-copy-symbolic';
+            const defaultName1 = fmt1.icon || ICON_RAW;
+            let gicon1 = null;
+            if (this.path) {
+                const localSvg1 = GLib.build_filenamev([this.path, 'icons', `${defaultName1}.svg`]);
+                if (GLib.file_test(localSvg1, GLib.FileTest.EXISTS)) {
+                    try { gicon1 = Gio.icon_new_for_string(localSvg1); } catch {}
+                }
+            }
+            slot.typeBtn1._icon.gicon = gicon1;
+            slot.typeBtn1._icon.icon_name = defaultName1;
             slot.typeBtn1._icon.style_class = 'raw-clipboard-item-icon';
             slot.typeBtn1._icon.icon_size = 20;
             slot.typeBtn1.show();
