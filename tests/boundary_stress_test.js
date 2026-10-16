@@ -190,15 +190,34 @@ const RawClipboardExtension = extModule.default;
 class MockSelectionSource {
     constructor(mimetypes, bytes) {
         this._mimetypes = mimetypes;
-        this._bytes = bytes instanceof GLib.Bytes ? bytes : new GLib.Bytes(bytes);
+        this._mimeMap = null;
+        if (bytes instanceof GLib.Bytes) {
+            this._bytes = bytes;
+        } else if (bytes instanceof Uint8Array) {
+            this._bytes = new GLib.Bytes(bytes);
+        } else if (typeof bytes === 'object' && bytes !== null && !ArrayBuffer.isView(bytes)) {
+            this._mimeMap = new Map();
+            for (const [k, v] of Object.entries(bytes)) {
+                this._mimeMap.set(k, v instanceof GLib.Bytes ? v : new GLib.Bytes(v));
+            }
+            this._bytes = null;
+        } else {
+            this._bytes = new GLib.Bytes(bytes || new Uint8Array(0));
+        }
     }
 
     get_mimetypes() {
         return this._mimetypes;
     }
 
-    async read_async(_mime, _cancellable) {
-        return Gio.MemoryInputStream.new_from_bytes(this._bytes);
+    async read_async(mime, _cancellable) {
+        if (this._mimeMap && this._mimeMap.has(mime)) {
+            return Gio.MemoryInputStream.new_from_bytes(this._mimeMap.get(mime));
+        }
+        if (this._bytes) {
+            return Gio.MemoryInputStream.new_from_bytes(this._bytes);
+        }
+        return Gio.MemoryInputStream.new_from_bytes(new GLib.Bytes(new Uint8Array(0)));
     }
 }
 
@@ -751,11 +770,26 @@ await reporter.run('5.2 剪切文件精准拦截与复制文件安全入库 (GNO
         new MockSelectionSource(['x-special/gnome-copied-files'], new TextEncoder().encode(cutText)));
     assert(getExtItemCount(ext) === 0, 'GNOME 剪切文件严禁进入历史队列');
 
-    // 2. KDE Dolphin 剪切文件 (包含 application/x-kde-cutselection)
+    // 2. KDE Dolphin 剪切文件 (包含 application/x-kde-cutselection 内容为 "1")
     const kdeCutText = 'file:///home/user/kde_moved.txt\n';
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
-        new MockSelectionSource(['text/uri-list', 'application/x-kde-cutselection'], new TextEncoder().encode(kdeCutText)));
-    assert(getExtItemCount(ext) === 0, 'KDE 剪切文件严禁进入历史队列');
+        new MockSelectionSource(['text/uri-list', 'application/x-kde-cutselection'], {
+            'text/uri-list': new TextEncoder().encode(kdeCutText),
+            'application/x-kde-cutselection': new TextEncoder().encode('1'),
+        }));
+    assert(getExtItemCount(ext) === 0, 'KDE 剪切文件（标记为1）严禁进入历史队列');
+
+    // 2.1 KDE Dolphin 普通复制文件 (包含 application/x-kde-cutselection 内容为 "0")
+    const kdeCopyText = 'file:///home/user/kde_copied.txt\n';
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
+        new MockSelectionSource(['text/uri-list', 'application/x-kde-cutselection'], {
+            'text/uri-list': new TextEncoder().encode(kdeCopyText),
+            'application/x-kde-cutselection': new TextEncoder().encode('0'),
+        }));
+    assert(getExtItemCount(ext) === 1, 'KDE 普通复制文件（标记为0）应正常进入历史队列，绝不误杀');
+    assert(getExtItem(ext, 0).title === 'kde_copied.txt', 'KDE 复制文件名正确提取');
+    ext._deleteEntry(0);
+    assert(getExtItemCount(ext) === 0, '清理队列');
 
     // 3. 正常复制文件 (首行为 copy 或纯 uri-list) 应正常进入历史队列
     const copyText = '# GNOME Nautilus Drag\ncopy\nfile:///home/user/target_copied.txt\n';

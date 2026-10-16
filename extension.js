@@ -134,8 +134,8 @@ export function detectCoreMime(mimeTypes) {
     // 优先读取 x-special/gnome-copied-files 以便精准识别 copy 或 cut（剪切）动作标记
     const fileMime = ['x-special/gnome-copied-files', 'text/uri-list'].find(m => mimeTypes.includes(m));
     if (fileMime) {
-        const isKdeCut = mimeTypes.includes('application/x-kde-cutselection');
-        return { mime: fileMime, type: 'files', isKdeCut };
+        const hasKdeCut = mimeTypes.includes('application/x-kde-cutselection');
+        return { mime: fileMime, type: 'files', hasKdeCut, isKdeCut: hasKdeCut };
     }
 
     // 3. 复合类型 (多 MIME：如网页复制同时提供 text/html 和 text/plain 两种表示，保留富文本与纯文本双格式)
@@ -1818,8 +1818,31 @@ export default class RawClipboardExtension extends Extension {
 
             // 严格识别与拦截“剪切文件”操作 (Cut Files Filter)：
             // 剪切文件（Ctrl+X）在粘贴后源文件即被物理移动，无法重复回放，故严格禁止进入历史队列
+            // 严格识别与拦截“剪切文件”操作 (Cut Files Filter)：
+            // 剪切文件（Ctrl+X）在粘贴后源文件即被物理移动，无法重复回放，故严格禁止进入历史队列
             if (core.type === 'files') {
-                let isCut = core.isKdeCut === true;
+                let isCut = false;
+                if (core.hasKdeCut) {
+                    try {
+                        const kdeRes = await this._readMimeStream(selectionSource, 'application/x-kde-cutselection', readCancellable, resetWatchdog, 1024, 0);
+                        if (kdeRes && kdeRes.bytes && kdeRes.bytes.get_size() > 0) {
+                            const data = kdeRes.bytes.get_data ? kdeRes.bytes.get_data() : (kdeRes.bytes.toArray ? kdeRes.bytes.toArray() : kdeRes.bytes);
+                            const kdeStr = Utf8Decoder.decode(data).trim();
+                            // KDE Dolphin 规范：
+                            // 无论复制还是剪切，MIME 列表中都会携带 application/x-kde-cutselection。
+                            // 内容为 "0" 表示普通复制；内容为 "1" (或非 "0") 表示剪切。
+                            if (kdeStr === '0') {
+                                isCut = false;
+                            } else {
+                                isCut = true;
+                            }
+                        } else {
+                            isCut = true;
+                        }
+                    } catch (_e) {
+                        isCut = false;
+                    }
+                }
                 if (!isCut) {
                     try {
                         const stream = Gio.MemoryInputStream.new_from_bytes(gBytes);
@@ -3711,10 +3734,25 @@ export default class RawClipboardExtension extends Extension {
         this._itemActors = this._itemSlots.slice(0, pageItems.length).map(s => s.itemBox);
     }
 
-    _setSelectedIndex(index) {
+    _getSelectedEntry() {
+        if (this._itemSlots && this._selectedIndex >= 0 && this._selectedIndex < this._itemSlots.length) {
+            const slot = this._itemSlots[this._selectedIndex];
+            if (slot && slot.currentEntry) {
+                return slot.currentEntry;
+            }
+        }
         const currentEntries = this._getSortedEntries();
-        const startIndex = this._currentPage * 8;
-        const pageCount = Math.min(8, currentEntries.length - startIndex);
+        const globalIndex = this._currentPage * 8 + this._selectedIndex;
+        if (globalIndex >= 0 && globalIndex < currentEntries.length) {
+            return currentEntries[globalIndex];
+        }
+        return null;
+    }
+
+    _setSelectedIndex(index) {
+        const pageCount = (this._itemActors && this._itemActors.length > 0)
+            ? this._itemActors.length
+            : Math.min(8, Math.max(0, this._getSortedEntries().length - this._currentPage * 8));
         if (index < 0 || index >= pageCount) return;
 
         this._selectedIndex = index;
@@ -3799,7 +3837,7 @@ export default class RawClipboardExtension extends Extension {
 
         // BackSpace 处理：
         // 搜索状态下：删除搜索词末尾字符；删光时不退出搜索状态，依然保留搜索框但显示无匹配项目
-        // 非搜索状态下：删除当前选中的历史记录条目
+        // 非搜索状态下：删除当前选中的历史记录条目 (按当前已显示、已选中的条目身份操作，杜绝待重绘竞态错配)
         if (symbol === Clutter.KEY_BackSpace) {
             if (this._inSearchMode) {
                 if (this._searchQuery.length > 0) {
@@ -3812,39 +3850,35 @@ export default class RawClipboardExtension extends Extension {
                 }
                 return Clutter.EVENT_STOP;
             } else {
-                const currentEntries = this._getSortedEntries();
-                const globalIndex = this._currentPage * 8 + this._selectedIndex;
-                if (globalIndex >= 0 && globalIndex < currentEntries.length) {
-                    this._deleteEntry(currentEntries[globalIndex]);
+                const targetEntry = this._getSelectedEntry();
+                if (targetEntry) {
+                    this._deleteEntry(targetEntry);
                 }
                 return Clutter.EVENT_STOP;
             }
         }
 
-        // Delete 按键：仅在非搜索模式下执行删除，防止在搜索输入期间误删条目
+        // Delete 按键：仅在非搜索模式下执行删除，防止在搜索输入期间误删条目 (按当前已显示、已选中的条目身份操作)
         if (symbol === Clutter.KEY_Delete) {
             if (!this._inSearchMode) {
-                const currentEntries = this._getSortedEntries();
-                const globalIndex = this._currentPage * 8 + this._selectedIndex;
-                if (globalIndex >= 0 && globalIndex < currentEntries.length) {
-                    this._deleteEntry(currentEntries[globalIndex]);
+                const targetEntry = this._getSelectedEntry();
+                if (targetEntry) {
+                    this._deleteEntry(targetEntry);
                 }
             }
             return Clutter.EVENT_STOP;
         }
 
-        // Enter / KP_Enter / Space: 确认选中并恢复
+        // Enter / KP_Enter / Space: 确认选中并恢复 (按当前已显示、已选中的条目身份操作，杜绝待重绘竞态错配)
         // 注意：搜索状态下 Space 作为输入字符搜索，不可用于确认恢复
         const isConfirmKey = symbol === Clutter.KEY_Return ||
             symbol === Clutter.KEY_KP_Enter ||
             (!this._inSearchMode && symbol === Clutter.KEY_space);
 
         if (isConfirmKey) {
-            const currentEntries = this._getSortedEntries();
-            const totalCount = currentEntries.length;
-            const globalIndex = this._currentPage * 8 + this._selectedIndex;
-            if (globalIndex >= 0 && globalIndex < totalCount) {
-                this._restoreEntry(currentEntries[globalIndex]);
+            const targetEntry = this._getSelectedEntry();
+            if (targetEntry) {
+                this._restoreEntry(targetEntry);
             }
             this._closePopup();
             return Clutter.EVENT_STOP;
@@ -3855,7 +3889,9 @@ export default class RawClipboardExtension extends Extension {
         const totalCount = currentEntries.length;
         const totalPages = Math.max(1, Math.ceil(totalCount / 8));
         const startIndex = this._currentPage * 8;
-        const pageCount = Math.max(0, Math.min(8, totalCount - startIndex));
+        const pageCount = (this._itemActors && this._itemActors.length > 0)
+            ? this._itemActors.length
+            : Math.max(0, Math.min(8, totalCount - startIndex));
 
         // Up: 上一项 (若在当前页首项，跨页滚动至上一页尾项)
         if (symbol === Clutter.KEY_Up) {

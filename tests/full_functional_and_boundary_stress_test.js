@@ -1175,11 +1175,26 @@ await reporter.run('6.2 剪切文件精准拦截与复制文件安全入库 (GNO
         new MockSelectionSource(['x-special/gnome-copied-files'], new TextEncoder().encode(cutText)));
     assert(getExtItemCount(ext) === 0, 'GNOME 剪切文件严禁进入历史队列');
 
-    // 2. KDE Dolphin 剪切文件 (包含 application/x-kde-cutselection)
+    // 2. KDE Dolphin 剪切文件 (包含 application/x-kde-cutselection 内容为 "1")
     const kdeCutText = 'file:///home/user/kde_moved.txt\n';
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
-        new MockSelectionSource(['text/uri-list', 'application/x-kde-cutselection'], new TextEncoder().encode(kdeCutText)));
-    assert(getExtItemCount(ext) === 0, 'KDE 剪切文件严禁进入历史队列');
+        new MockSelectionSource(['text/uri-list', 'application/x-kde-cutselection'], {
+            'text/uri-list': new TextEncoder().encode(kdeCutText),
+            'application/x-kde-cutselection': new TextEncoder().encode('1'),
+        }));
+    assert(getExtItemCount(ext) === 0, 'KDE 剪切文件（标记为1）严禁进入历史队列');
+
+    // 2.1 KDE Dolphin 普通复制文件 (包含 application/x-kde-cutselection 内容为 "0")
+    const kdeCopyText = 'file:///home/user/kde_copied.txt\n';
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
+        new MockSelectionSource(['text/uri-list', 'application/x-kde-cutselection'], {
+            'text/uri-list': new TextEncoder().encode(kdeCopyText),
+            'application/x-kde-cutselection': new TextEncoder().encode('0'),
+        }));
+    assert(getExtItemCount(ext) === 1, 'KDE 普通复制文件（标记为0）应正常进入历史队列，绝不误杀');
+    assert(getExtItem(ext, 0).title === 'kde_copied.txt', 'KDE 复制文件名正确提取');
+    ext._deleteEntry(0);
+    assert(getExtItemCount(ext) === 0, '清理队列');
 
     // 3. 正常复制文件 (首行为 copy 或纯 uri-list) 应正常进入历史队列
     const copyText = '# GNOME Nautilus Drag\ncopy\nfile:///home/user/target_copied.txt\n';
@@ -3766,6 +3781,80 @@ await reporter.run('12.14 弹窗打开时禁用与关闭弹窗时彻底清空全
     ext._closePopup();
     assert(ext._itemSlots === null, '正常关闭弹窗后 _itemSlots 同样彻底置 null 清空');
     assert(ext._container === null, '正常关闭弹窗后 _container 同样彻底置 null 清空');
+    ext.disable();
+});
+
+await reporter.run('12.15 待重绘期间键盘交互条目身份强绑定测试 (消灭后台捕获新条目与异步重绘窗口期间 Enter/Delete 恢复或删错对象的竞态错配)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 1. 写入初始条目 A 并打开弹窗
+    const srcA = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Item A'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcA);
+    ext._openPopup();
+
+    // 此时屏幕槽位 0 显示且选中条目 A
+    assert(ext._itemSlots[0].currentEntry !== null, '槽位0已挂载条目');
+    assert(ext._itemSlots[0].currentEntry.preview === 'Item A', '槽位0显示条目 A');
+    assert(ext._selectedIndex === 0, '选中索引为0');
+
+    // 2. 模拟后台异步捕获新条目 B (模拟历史先更新，而界面处于 DEFAULT_IDLE 待重绘窗口)
+    const srcB = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Item B'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcB);
+
+    // 此时历史队列与 _getSortedEntries() 队首已经是 B
+    const latestSorted = ext._getSortedEntries();
+    assert(latestSorted[0].preview === 'Item B', '历史队首已更新为新条目 B');
+    assert(latestSorted[1].preview === 'Item A', '原条目 A 排在第 2 位');
+
+    // 但界面槽位 0 仍显示条目 A (尚未执行 _renderPage 重绘)
+    assert(ext._itemSlots[0].currentEntry.preview === 'Item A', '待重绘期间槽位 0 仍为条目 A');
+
+    // 3. 模拟用户此时按下 Enter 键恢复当前选中的条目
+    let restoredTarget = null;
+    const origRestore = ext._restoreEntry.bind(ext);
+    ext._restoreEntry = (entry) => {
+        restoredTarget = entry;
+        origRestore(entry);
+    };
+
+    const enterEvent = { get_key_symbol: () => Clutter.KEY_Return, get_state: () => 0 };
+    ext._onKeyPress(enterEvent);
+
+    // 严格断言：恢复的目标必须是屏幕上所见、所选中的条目 A，绝不可因数组排序先更新而误恢复为 B！
+    assert(restoredTarget !== null, '触发了恢复操作');
+    assert(restoredTarget.preview === 'Item A', `恢复的目标必须是所选的 Item A，实际: ${restoredTarget.preview}`);
+
+    // 4. 测试同一竞态窗口下的 Delete 删除操作
+    // 重新打开弹窗展示，此时 Item A 因刚被恢复而通过 LRU 提升至队首，当前队首为 A，次席为 B
+    ext._openPopup();
+    assert(ext._itemSlots[0].currentEntry.preview === 'Item A', '槽位0为刚恢复提升至队首的 Item A');
+    assert(ext._itemSlots[1].currentEntry.preview === 'Item B', '槽位1为 Item B');
+
+    // 用户选中槽位 0 (Item A)
+    ext._setSelectedIndex(0);
+    assert(ext._selectedIndex === 0, '选中项指向槽位0 (Item A)');
+
+    // 后台又捕获插入 Item C 到队首，此时历史数组队首变 C，原条目全量后移一位
+    const srcC = new MockSelectionSource(['text/plain'], new TextEncoder().encode('Item C'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcC);
+
+    // 此时历史队首已为 Item C
+    assert(ext._getSortedEntries()[0].preview === 'Item C', '后台历史已插入 Item C 至队首');
+
+    // 但界面槽位 0 仍持有并显示待重绘前的 Item A
+    assert(ext._itemSlots[0].currentEntry.preview === 'Item A', '待重绘期间槽位0仍为 Item A');
+
+    // 用户按下 Delete 键
+    const deleteEvent = { get_key_symbol: () => Clutter.KEY_Delete, get_state: () => 0 };
+    ext._onKeyPress(deleteEvent);
+
+    // 严格断言：被删除的必须是用户界面当前选中的 Item A，绝不是因索引漂移而错删新捕获的 Item C！
+    assert(ext._undoStack.length === 1, '撤销栈有 1 项');
+    const deletedEntry = ext._undoStack[0];
+    assert(deletedEntry.preview === 'Item A', `被删除的对象必须是所选中的 Item A，实际: ${deletedEntry.preview}`);
+
+    ext._closePopup();
     ext.disable();
 });
 
