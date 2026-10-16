@@ -3674,6 +3674,101 @@ await reporter.run('12.12 四种排序方式 (记录顺序/大小/类型/首字�
     ext.disable();
 });
 
+await reporter.run('12.13 消除重复物化缓存与物理前缀树缓冲预算测试 (RadixNode无_data持久缓存、消除assembledBytes与gBytes闭包捕获、物理前缀树准确纳入总上限预算)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 1. 创建两个各 30MB 的条目，共享 10MB 公共前缀
+    const commonPrefix = new Uint8Array(10 * 1024 * 1024);
+    commonPrefix.fill(65); // 'A'
+    const suffix1 = new Uint8Array(20 * 1024 * 1024);
+    suffix1.fill(66); // 'B'
+    const suffix2 = new Uint8Array(20 * 1024 * 1024);
+    suffix2.fill(67); // 'C'
+
+    const payload1 = new Uint8Array(30 * 1024 * 1024);
+    payload1.set(commonPrefix, 0);
+    payload1.set(suffix1, commonPrefix.length);
+
+    const payload2 = new Uint8Array(30 * 1024 * 1024);
+    payload2.set(commonPrefix, 0);
+    payload2.set(suffix2, commonPrefix.length);
+
+    const src1 = new MockSelectionSource(['text/plain'], payload1);
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src1);
+    const src2 = new MockSelectionSource(['text/plain'], payload2);
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src2);
+
+    assert(ext._getVisibleEntries().length === 2, '两项成功入库');
+
+    // 2. 验证 RadixNode 节点上不存在任何持久的 _data 数组缓存
+    const tree = ext._radixTree;
+    const stack = [tree._root];
+    while (stack.length > 0) {
+        const node = stack.pop();
+        assert(node._data === undefined, 'RadixNode 严禁持有持久 _data 数组缓存属性');
+        for (const child of node.children.values()) {
+            stack.push(child);
+        }
+    }
+
+    // 3. 验证 getTotalBytes 真实反映前缀树物理分配大小 (10MB前缀 + 20MB后缀1 + 20MB后缀2 = 50MB)
+    const treeBytes = tree.getTotalBytes();
+    assert(treeBytes === 50 * 1024 * 1024, `前缀树物理存储应为 50MB (共享前缀节省10MB)，实际: ${treeBytes / 1024 / 1024}MB`);
+
+    // 4. 执行条目回灌，验证访问 bytes 后不持久保留重复物化的 assembledBytes
+    const entry2 = ext._getVisibleEntries()[0];
+    const restoredBytes = entry2.bytes;
+    assert(restoredBytes.get_size() === 30 * 1024 * 1024, '回灌重构数据大小正确 (30MB)');
+    // 验证 formats[0].bytes 动态派生自 entryRef.bytes，未捕获原始大 gBytes
+    const fmtBytes = entry2.formats[0].bytes;
+    assert(fmtBytes.get_size() === 30 * 1024 * 1024, 'formats[0].bytes 动态委托返回一致');
+
+    // 5. 验证容量限制：设置总上限为 50MB (低于两项逻辑总和 60MB)，必须淘汰最旧条目
+    ext._settings.set_int('max-total-size-mb', 50);
+    assert(ext._getVisibleEntries().length === 1, '总上限 50MB 触发淘汰，队列裁剪至 1 项');
+    assert(tree.getTotalBytes() <= 50 * 1024 * 1024, '存储树实际物理大小严格受控在总上限预算之内');
+
+    ext.disable();
+});
+
+await reporter.run('12.14 弹窗打开时禁用与关闭弹窗时彻底清空全部 UI 槽位与条目引用测试 (切断 _itemSlots 闭包引用，杜绝 GNOME 51 实例保留内存泄漏)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    const src = new MockSelectionSource(['text/plain'], new TextEncoder().encode('LeakCheckItem'));
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src);
+
+    // 1. 打开弹窗，使 _itemSlots 槽位完成渲染并持有 entry
+    ext._openPopup();
+    assert(ext._container !== null, '弹窗容器已建立');
+    assert(ext._itemSlots !== null && ext._itemSlots.length > 0, '槽位池已初始化');
+    assert(ext._itemSlots[0].currentEntry !== null, '槽位0持有当前条目引用');
+
+    // 2. 在弹窗打开状态下调用 disable()
+    ext.disable();
+
+    // 3. 严格验证所有 UI 引用与槽位 entry 引用彻底清空置 null
+    assert(ext._itemSlots === null, 'disable() 必须清空 _itemSlots，切断槽位引用');
+    assert(ext._itemActors === null, 'disable() 必须清空 _itemActors');
+    assert(ext._container === null, 'disable() 必须清空 _container');
+    assert(ext._popup === null, 'disable() 必须清空 _popup');
+    assert(ext._sortBar === null, 'disable() 必须清空 _sortBar');
+    assert(ext._searchBar === null, 'disable() 必须清空 _searchBar');
+    assert(ext._searchEntry === null, 'disable() 必须清空 _searchEntry');
+    assert(ext._emptyLabel === null, 'disable() 必须清空 _emptyLabel');
+
+    // 4. 再次测试正常 _closePopup() 关窗清理
+    ext.enable();
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src);
+    ext._openPopup();
+    assert(ext._itemSlots !== null, '重新打开弹窗槽位池重新建立');
+    ext._closePopup();
+    assert(ext._itemSlots === null, '正常关闭弹窗后 _itemSlots 同样彻底置 null 清空');
+    assert(ext._container === null, '正常关闭弹窗后 _container 同样彻底置 null 清空');
+    ext.disable();
+});
+
 // ============================================================================
 // SUITE 13: 预览内搜索与按键交互自动化测试 (In-Preview Search & UI Interaction)
 // ============================================================================

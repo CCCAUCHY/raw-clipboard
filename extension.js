@@ -504,19 +504,14 @@ export class RadixNode {
         this.children = new Map(); // byte (0-255) -> RadixNode
         this.entries = new Map();  // mime -> entry (允许不同 MIME 条目零冗余物理共享同一前缀/叶子节点)
         this.entry = null;
-        this._data = null;
     }
 
     get data() {
-        if (!this._data && this.bytes) {
-            this._data = this.bytes.get_data();
-        }
-        return this._data;
+        return this.bytes ? this.bytes.get_data() : null;
     }
 
     setBytes(bytes) {
         this.bytes = bytes;
-        this._data = null;
     }
 
     collectPathSegments() {
@@ -693,6 +688,21 @@ export class RadixRawTree {
             }
             curr = parent;
         }
+    }
+
+    getTotalBytes() {
+        let total = 0;
+        const stack = [this._root];
+        while (stack.length > 0) {
+            const node = stack.pop();
+            if (node.bytes && typeof node.bytes.get_size === 'function') {
+                total += node.bytes.get_size();
+            }
+            for (const child of node.children.values()) {
+                stack.push(child);
+            }
+        }
+        return total;
     }
 
     clear() {
@@ -1373,24 +1383,8 @@ export default class RawClipboardExtension extends Extension {
             this._selectionOwnerId = -1;
         }
 
-        // 6. 立即销毁弹窗（无需等待动画）
-        this._closeContextMenu();
-        if (this._grab) {
-            Main.popModal(this._grab);
-            this._grab = null;
-        }
-        if (this._container) {
-            Main.layoutManager.uiGroup.remove_child(this._container);
-            this._container.destroy();
-            this._container = null;
-            this._popup = null;
-            this._listContainer = null;
-            this._pageBar = null;
-            this._pageBadge = null;
-            this._undoBtn = null;
-        }
-        this._itemActors = null;
-        this._isClosing = false;
+        // 6. 立即同步销毁弹窗与全部 UI / 槽位引用（彻底切断槽位对 entry 的引用闭包，允许 GC 即时回收）
+        this._destroyPopupUI();
         this.#deletedEntries.clear();
         this._undoStack = [];
 
@@ -1860,7 +1854,6 @@ export default class RawClipboardExtension extends Extension {
                     htmlBytes: compositeHtmlBytes,
                 });
                 let cachedThumb = undefined;
-                let assembledBytes = (leafNode.collectPathSegments().length === 1 ? leafNode.bytes : null);
                 let cachedChecksum = null;
                 let cachedHtmlBytes = compositeHtmlBytes;
                 let cachedTextBytes = compositeTextBytes;
@@ -1870,6 +1863,8 @@ export default class RawClipboardExtension extends Extension {
 
                 const entryFormats = [];
                 const isEn = thisRef._getLanguage() === 'en-US';
+                let entryRef = null;
+
                 if (core.type === 'composite') {
                     entryFormats.push({
                         mime: core.htmlMime || 'text/html',
@@ -1891,7 +1886,7 @@ export default class RawClipboardExtension extends Extension {
                         type: 'text',
                         icon: 'edit-copy-symbolic',
                         label: isEn ? 'Text' : '纯文本',
-                        get bytes() { return gBytes; },
+                        get bytes() { return entryRef.bytes; },
                     });
                 } else if (core.type === 'html') {
                     entryFormats.push({
@@ -1899,7 +1894,7 @@ export default class RawClipboardExtension extends Extension {
                         type: 'html',
                         icon: 'text-html-symbolic',
                         label: isEn ? 'HTML' : '富文本',
-                        get bytes() { return gBytes; },
+                        get bytes() { return entryRef.bytes; },
                     });
                 } else if (core.type === 'files') {
                     entryFormats.push({
@@ -1907,7 +1902,7 @@ export default class RawClipboardExtension extends Extension {
                         type: 'files',
                         icon: previewInfo.icon || 'text-x-generic-symbolic',
                         label: isEn ? 'Files' : '文件',
-                        get bytes() { return gBytes; },
+                        get bytes() { return entryRef.bytes; },
                     });
                 } else if (core.type === 'image') {
                     entryFormats.push({
@@ -1915,7 +1910,7 @@ export default class RawClipboardExtension extends Extension {
                         type: 'image',
                         icon: 'image-x-generic-symbolic',
                         label: isEn ? 'Image' : '图片',
-                        get bytes() { return gBytes; },
+                        get bytes() { return entryRef.bytes; },
                     });
                 } else {
                     entryFormats.push({
@@ -1923,34 +1918,30 @@ export default class RawClipboardExtension extends Extension {
                         type: 'raw',
                         icon: 'application-x-generic-symbolic',
                         label: unknownLabel || (isEn ? 'Unknown' : '未知类型'),
-                        get bytes() { return gBytes; },
+                        get bytes() { return entryRef.bytes; },
                     });
                 }
 
-                // 注意：entry.bytes/checksum/thumbIcon 采用惰性物化与按需缓存；
-                // 前缀树在后续分裂重构时，各次访问内容恒定等价，但 bytes 对象身份可能按需更新。
+                // 注意：entry.bytes/checksum/thumbIcon 采用按需提取与轻量指纹，杜绝长期持有冗余物化缓冲；
+                // 前缀树在后续分裂重构时，各次访问内容恒定等价，未持久缓存 assembledBytes，允许 GC 即时回收临时组装流。
                 // 条目本身作为纯净只读视图冻结，不向外部泄露内部可变的 _radixNode。
-                return Object.freeze({
+                entryRef = Object.freeze({
                     id: `${copyTime}_${Math.floor(Math.random() * 1000)}`,
                     type: core.type,
                     mime: core.mime,
                     size: size,
                     formats: Object.freeze(entryFormats),
                     get bytes() {
-                        if (!assembledBytes) {
-                            const segs = leafNode.collectPathSegments();
-                            if (segs.length === 1) {
-                                assembledBytes = segs[0];
-                            } else {
-                                const out = Gio.MemoryOutputStream.new_resizable();
-                                for (const s of segs) {
-                                    out.write_bytes(s, null);
-                                }
-                                out.close(null);
-                                assembledBytes = out.steal_as_bytes();
-                            }
+                        const segs = leafNode.collectPathSegments();
+                        if (segs.length === 1) {
+                            return segs[0];
                         }
-                        return assembledBytes;
+                        const out = Gio.MemoryOutputStream.new_resizable();
+                        for (const s of segs) {
+                            out.write_bytes(s, null);
+                        }
+                        out.close(null);
+                        return out.steal_as_bytes();
                     },
                     get checksum() {
                         if (!cachedChecksum) {
@@ -2004,6 +1995,7 @@ export default class RawClipboardExtension extends Extension {
                     get time() { return entryTime; },
                     set time(val) { if (typeof val === 'number') entryTime = val; },
                 });
+                return entryRef;
             });
 
             if (insertResult.isDuplicate) {
@@ -2121,8 +2113,11 @@ export default class RawClipboardExtension extends Extension {
             }
         }
 
-        // 3. 全局总内存上限裁剪 (FIFO: 若存储树总大小超出此限制，则自动移除最早的一项或多项记录，直到存储树总大小低于此限制)
-        let totalBytes = this.#history.reduce((sum, item) => sum + (typeof item.size === 'number' ? item.size : (item.bytes ? item.bytes.get_size() : 0)), 0);
+        // 3. 全局总内存上限裁剪 (FIFO: 若存储树实际物理大小或历史条目逻辑大小超出此限制，则自动移除最早的一项或多项记录，直到低于限制)
+        let totalEntryBytes = this.#history.reduce((sum, item) => sum + (typeof item.size === 'number' ? item.size : (item.bytes ? item.bytes.get_size() : 0)), 0);
+        let totalTreeBytes = this.#radixTree.getTotalBytes ? this.#radixTree.getTotalBytes() : totalEntryBytes;
+        let totalBytes = Math.max(totalEntryBytes, totalTreeBytes);
+
         while (this.#history.length > 0 && totalBytes > maxTotalBytes) {
             const popped = this.#history.pop();
             if (popped) {
@@ -2132,7 +2127,9 @@ export default class RawClipboardExtension extends Extension {
                     this.#deletedEntries.delete(popped);
                     this._undoStack = this._undoStack.filter(e => e !== popped);
                 }
-                totalBytes -= (typeof popped.size === 'number' ? popped.size : (popped.bytes ? popped.bytes.get_size() : 0));
+                totalEntryBytes -= (typeof popped.size === 'number' ? popped.size : (popped.bytes ? popped.bytes.get_size() : 0));
+                totalTreeBytes = this.#radixTree.getTotalBytes ? this.#radixTree.getTotalBytes() : totalEntryBytes;
+                totalBytes = Math.max(totalEntryBytes, totalTreeBytes);
             }
         }
 
@@ -2296,11 +2293,11 @@ export default class RawClipboardExtension extends Extension {
             const thisRef = this;
             const insertResult = this.#radixTree.insert(mime, textBytes, leafNode => {
                 const previewInfo = generatePreview('text', mime, textBytes, null, thisRef._getLanguage());
-                let assembledBytes = (leafNode.collectPathSegments().length === 1 ? leafNode.bytes : null);
                 let cachedChecksum = null;
                 let entryTime = copyTime;
+                let entryRef = null;
 
-                return Object.freeze({
+                entryRef = Object.freeze({
                     id: `${copyTime}_${Math.floor(Math.random() * 1000)}`,
                     type: 'text',
                     mime: mime,
@@ -2310,23 +2307,19 @@ export default class RawClipboardExtension extends Extension {
                         type: 'text',
                         icon: 'edit-copy-symbolic',
                         label: thisRef._getLanguage() === 'en-US' ? 'Text' : '纯文本',
-                        bytes: textBytes,
+                        get bytes() { return entryRef.bytes; },
                     }]),
                     get bytes() {
-                        if (!assembledBytes) {
-                            const segs = leafNode.collectPathSegments();
-                            if (segs.length === 1) {
-                                assembledBytes = segs[0];
-                            } else {
-                                const out = Gio.MemoryOutputStream.new_resizable();
-                                for (const s of segs) {
-                                    out.write_bytes(s, null);
-                                }
-                                out.close(null);
-                                assembledBytes = out.steal_as_bytes();
-                            }
+                        const segs = leafNode.collectPathSegments();
+                        if (segs.length === 1) {
+                            return segs[0];
                         }
-                        return assembledBytes;
+                        const out = Gio.MemoryOutputStream.new_resizable();
+                        for (const s of segs) {
+                            out.write_bytes(s, null);
+                        }
+                        out.close(null);
+                        return out.steal_as_bytes();
                     },
                     get checksum() {
                         if (!cachedChecksum) {
@@ -2343,6 +2336,7 @@ export default class RawClipboardExtension extends Extension {
                     get time() { return entryTime; },
                     set time(val) { if (typeof val === 'number') entryTime = val; },
                 });
+                return entryRef;
             });
 
             if (insertResult.isDuplicate) {
@@ -3041,38 +3035,7 @@ export default class RawClipboardExtension extends Extension {
             }
         } catch (e) {
             this._error('[RawClipboard] Open popup failed:', e);
-            if (this._container) {
-                try {
-                    const parent = this._container.get_parent ? this._container.get_parent() : this._container.parent;
-                    if (parent && typeof parent.remove_child === 'function') {
-                        parent.remove_child(this._container);
-                    } else {
-                        Main.layoutManager.uiGroup.remove_child(this._container);
-                    }
-                } catch (_) {}
-                try { this._container.destroy(); } catch (_) {}
-                this._container = null;
-                this._popup = null;
-                this._sortBar = null;
-                this._sortButtons = null;
-                this._searchBar = null;
-                this._searchEntry = null;
-                this._emptyLabel = null;
-                this._listContainer = null;
-                this._pageBar = null;
-                this._pageBadge = null;
-                this._undoBtn = null;
-                this._undoLabel = null;
-                this._itemSlots = null;
-                this._itemActors = null;
-                this._sortMode = 'queue';
-                this._inSearchMode = false;
-                this._searchQuery = '';
-            }
-            if (this._grab) {
-                Main.popModal(this._grab);
-                this._grab = null;
-            }
+            this._destroyPopupUI();
         }
     }
 
@@ -3223,8 +3186,81 @@ export default class RawClipboardExtension extends Extension {
         this._contextMenu = null;
     }
 
+    _destroyPopupUI() {
+        this._closeContextMenu();
+        if (this._grab) {
+            try { Main.popModal(this._grab); } catch (_) {}
+            this._grab = null;
+        }
+        if (this._renderIdleId) {
+            try { GLib.source_remove(this._renderIdleId); } catch (_) {}
+            this._renderIdleId = 0;
+        }
+
+        // 彻底切断所有 JS 槽位对条目的引用与闭包持有
+        if (this._itemSlots) {
+            for (const slot of this._itemSlots) {
+                if (slot) {
+                    slot.currentEntry = null;
+                    slot.currentGIcon = null;
+                    slot.currentIconName = null;
+                    if (slot.typeBtn0) slot.typeBtn0._targetMime = null;
+                    if (slot.typeBtn1) slot.typeBtn1._targetMime = null;
+                    try { slot.itemBox.destroy(); } catch (_) {}
+                    slot.itemBox = null;
+                    slot.iconBox = null;
+                    slot.iconActor = null;
+                    slot.typeBtn0 = null;
+                    slot.typeBtn1 = null;
+                    slot.contentBox = null;
+                    slot.previewLabel = null;
+                    slot.subLabel = null;
+                    slot.timeLabel = null;
+                    slot.deleteBtn = null;
+                }
+            }
+            this._itemSlots = null;
+        }
+        this._itemActors = null;
+
+        if (this._container) {
+            try {
+                const parent = this._container.get_parent ? this._container.get_parent() : this._container.parent;
+                if (parent && typeof parent.remove_child === 'function') {
+                    parent.remove_child(this._container);
+                } else {
+                    Main.layoutManager.uiGroup.remove_child(this._container);
+                }
+            } catch (_) {}
+            try { this._container.destroy(); } catch (_) {}
+            this._container = null;
+        }
+
+        this._popup = null;
+        this._sortBar = null;
+        this._sortButtons = null;
+        this._searchBar = null;
+        this._searchEntry = null;
+        this._emptyLabel = null;
+        this._listContainer = null;
+        this._pageBar = null;
+        this._pageBadge = null;
+        this._undoBtn = null;
+        this._undoLabel = null;
+        this._loopBadge = null;
+        this._sortMode = 'queue';
+        this._inSearchMode = false;
+        this._searchQuery = '';
+        this._loopArmDirection = null;
+        this._isClosing = false;
+    }
+
     _closePopup() {
-        if (!this._container || this._isClosing) return;
+        if (!this._container) return;
+        if (this._isClosing) {
+            this._destroyPopupUI();
+            return;
+        }
         this._closeContextMenu();
         this._isClosing = true;
         this._debug('[RawClipboard] 关闭剪贴板窗口');
@@ -3234,7 +3270,7 @@ export default class RawClipboardExtension extends Extension {
 
         // 立即释放模态抓取，确保键盘和系统焦点即时回归
         if (this._grab) {
-            Main.popModal(this._grab);
+            try { Main.popModal(this._grab); } catch (_) {}
             this._grab = null;
         }
 
@@ -3244,36 +3280,7 @@ export default class RawClipboardExtension extends Extension {
         const animDuration = shouldUseMotion() ? 100 : 0;
 
         const cleanup = () => {
-            if (this._container) {
-                try {
-                    const parent = this._container.get_parent ? this._container.get_parent() : this._container.parent;
-                    if (parent && typeof parent.remove_child === 'function') {
-                        parent.remove_child(this._container);
-                    } else {
-                        Main.layoutManager.uiGroup.remove_child(this._container);
-                    }
-                } catch (_) {}
-                this._container.destroy();
-                this._container = null;
-                this._popup = null;
-                this._sortBar = null;
-                this._sortButtons = null;
-                this._searchBar = null;
-                this._searchEntry = null;
-                this._emptyLabel = null;
-                this._listContainer = null;
-                this._pageBar = null;
-                this._pageBadge = null;
-                this._undoBtn = null;
-                this._undoLabel = null;
-                this._itemSlots = null;
-                this._itemActors = null; // 切断 UI 控件对 entry 的闭包持有，允许 GC 即时回收
-                this._sortMode = 'queue';
-                this._inSearchMode = false;
-                this._searchQuery = '';
-                this._loopArmDirection = null;
-            }
-            this._isClosing = false;
+            this._destroyPopupUI();
         };
 
         if (animDuration > 0 && this._popup) {
