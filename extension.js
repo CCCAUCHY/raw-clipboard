@@ -736,7 +736,8 @@ export default class RawClipboardExtension extends Extension {
 
     _isTextPreviewable(entry) {
         if (!entry) return false;
-        return entry.type === 'text' || entry.type === 'html' || entry.type === 'files' || entry.type === 'composite';
+        // 未知类型实际上是以类型标签的文本形式预览，统一对待可见预览的内容；全系统中唯独位图图片以缩略图预览
+        return entry.type !== 'image';
     }
 
     // 提取条目的纯文本形式 (用于“复制文本”注入剪贴板与历史入库)
@@ -1157,8 +1158,8 @@ export default class RawClipboardExtension extends Extension {
         const type = entry.type || 'unknown';
         const size = typeof entry.size === 'number' ? entry.size : (entry.bytes?.get_size ? entry.bytes.get_size() : 0);
 
-        // 不预览的记录项目（位图、未知类型等）或无预览内容的不计算且不打印 MD5
-        if (!this._isTextPreviewable(entry) || !entry.preview) {
+        // 不展示内容文本预览的项目（位图、未知类型等）或无预览内容的不计算且不打印 MD5
+        if (entry.type === 'image' || entry.type === 'raw' || !entry.preview) {
             return `[条目#${id} (${type}, ${size}B)]`;
         }
 
@@ -2233,7 +2234,7 @@ export default class RawClipboardExtension extends Extension {
         const conversions = [];
 
         // 复制文本 (Copy Text):
-        // 转换为文本只对以文本形式预览的记录开放 (非纯文本但能以文本预览的记录: 富文本 HTML、文件列表、多类型等)
+        // 转换为文本对所有以文本形式预览的记录开放 (非纯文本但能以文本预览的记录: 富文本 HTML、文件列表、多类型、未知类型等)
         if (entry.type !== 'text' && this._isTextPreviewable(entry)) {
             conversions.push({
                 targetType: 'text',

@@ -3710,7 +3710,7 @@ await reporter.run('13.1 键入文字自动唤出搜索栏替代排序栏，搜�
     ext.disable();
 });
 
-await reporter.run('13.2 关键字仅匹配能以文本形式预览的项目 (text, html, files)，位图与未知类型绝不匹配，结果以记录顺序排序', async () => {
+await reporter.run('13.2 关键字匹配所有以文本形式预览的项目 (text, html, files, raw 等)，位图绝不匹配，结果以记录顺序排序', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -3734,15 +3734,16 @@ await reporter.run('13.2 关键字仅匹配能以文本形式预览的项目 (te
     // 键入 'apple'
     ext._enterSearchMode('apple');
     const matched = ext._getSortedEntries();
-    assert(matched.length === 3, `仅匹配 3 项能以文本预览的项目，实际: ${matched.length}`);
-    // 结果必须以记录顺序 (LRU 队首到队尾: files -> html -> text) 排序
-    assert(matched[0].type === 'files', '第 1 项为 files (按最新记录顺序)');
-    assert(matched[1].type === 'html', '第 2 项为 html');
-    assert(matched[2].type === 'text', '第 3 项为 text');
+    assert(matched.length === 4, `匹配 4 项以文本形式预览的项目 (含未知类型标签匹配)，实际: ${matched.length}`);
+    // 结果必须以记录顺序 (LRU 队首到队尾: raw -> files -> html -> text) 排序
+    assert(matched[0].type === 'raw', '第 1 项为 raw (按最新记录顺序，类型标签包含 apple)');
+    assert(matched[1].type === 'files', '第 2 项为 files');
+    assert(matched[2].type === 'html', '第 3 项为 html');
+    assert(matched[3].type === 'text', '第 4 项为 text');
 
-    // 确认位图与未知类型未被匹配
+    // 确认位图未被匹配，未知类型以类型标签文本形式预览成功匹配
     assert(!matched.some(e => e.type === 'image'), '位图类型绝不匹配');
-    assert(!matched.some(e => e.type === 'raw'), '未知类型绝不匹配');
+    assert(matched.some(e => e.type === 'raw'), '未知类型以类型标签文本形式预览成功匹配');
 
     ext._closePopup();
     ext.disable();
@@ -4172,7 +4173,7 @@ await reporter.run('15.1 右键菜单弹出、定位保护与 Esc/点击空白�
     ext.disable();
 });
 
-await reporter.run('15.2 右键菜单按类型差异化选项展示测试 (非文本预览型含复制文本，纯文本与位图/未知类型不含复制文本)', async () => {
+await reporter.run('15.2 右键菜单按类型差异化选项展示测试 (能以文本预览的记录开放复制文本与带入搜索，纯文本与位图不含复制文本)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -4197,12 +4198,7 @@ await reporter.run('15.2 右键菜单按类型差异化选项展示测试 (非�
     ext._openPopup();
     // 队首到队尾顺序: [raw (0), image (1), files (2), html (3), text (4)]
 
-    // raw: 仅有带入搜索
-    ext._itemSlots[0].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [100, 100] });
-    assert(ext._contextMenu.get_children().length === 1, 'raw 类型右键仅 1 项 (带入搜索)');
-    ext._closeContextMenu();
-
-    // image: 仅有带入搜索
+    // image: 仅有带入搜索 (位图以缩略图预览非文本预览，不开放复制文本)
     ext._itemSlots[1].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [100, 100] });
     assert(ext._contextMenu.get_children().length === 1, 'image 类型右键仅 1 项 (带入搜索)');
     ext._closeContextMenu();
@@ -4222,7 +4218,33 @@ await reporter.run('15.2 右键菜单按类型差异化选项展示测试 (非�
     assert(ext._contextMenu.get_children().length === 2, 'files 文件类型右键展示 2 项 (带入搜索 + 复制文本)');
     ext._closeContextMenu();
 
-    ext._closePopup();
+    // raw: 未知类型以类型标签文本形式预览，统一对待可见预览的内容，必须包含带入搜索和复制文本
+    ext._itemSlots[0].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [100, 100] });
+    assert(ext._contextMenu.get_children().length === 2, 'raw 未知类型以类型标签文本预览，右键展示 2 项 (带入搜索 + 复制文本)');
+
+    // 验证 raw 条目的“带入搜索”
+    const searchBtn = ext._contextMenu.get_children()[0];
+    searchBtn.emit('button-press-event', { get_button: () => 1 });
+    assert(ext._inSearchMode === true, '点击带入搜索成功进入搜索状态');
+    assert(ext.searchQuery === 'application/x-unknown-data', '类型标签文本预览成功带入搜索框');
+    ext._exitSearchMode();
+
+    // 重新打开右键菜单验证 raw 条目的“复制文本”
+    ext._itemSlots[0].itemBox.emit('button-press-event', { get_button: () => 3, get_coords: () => [100, 100] });
+    const copyBtn = ext._contextMenu.get_children()[1];
+    copyBtn.emit('button-press-event', { get_button: () => 1 });
+    assert(ext._contextMenu === null, '执行复制文本后右键菜单关闭');
+    assert(ext._container === null, '执行复制文本后弹窗关闭');
+
+    // 验证：队首成功添加一项相同的纯文本记录，直接换文本标签且原始二进制字节不变
+    assert(ext._getVisibleEntries().length === 6, '历史记录总数增加至 6 项');
+    const newHead = ext._getVisibleEntries()[0];
+    assert(newHead.type === 'text', '队首新增条目类型为 text');
+    assert(newHead.mime === 'text/plain;charset=utf-8', 'MIME 标签转换为 text/plain;charset=utf-8');
+    assert(newHead.bytes.get_size() === 3, '原始二进制数据字节数 100% 保持一致');
+    const rawData = newHead.bytes.get_data ? newHead.bytes.get_data() : newHead.bytes.toArray();
+    assert(rawData[0] === 9 && rawData[1] === 8 && rawData[2] === 7, '原始字节内容 100% 原样保留');
+
     ext.disable();
 });
 
