@@ -155,7 +155,7 @@ export function getSemanticMimeKey(mime) {
 }
 
 export function getCanonicalServedMime(mime) {
-    if (!mime || typeof mime !== 'string') return 'text/plain';
+    if (!mime || typeof mime !== 'string') return 'text/plain;charset=utf-8';
     const trimmed = mime.trim();
     const base = normalizeBaseMime(trimmed);
     if (['text/plain', 'utf8_string', 'string', 'text'].includes(base)) {
@@ -163,11 +163,11 @@ export function getCanonicalServedMime(mime) {
         if (parts.length > 1) {
             const params = parts.slice(1).map(p => p.trim().toLowerCase()).filter(Boolean);
             if (params.every(p => p === 'charset=utf-8' || p === 'charset=utf8' || p === 'charset=us-ascii' || p === 'charset=ascii')) {
-                return 'text/plain';
+                return 'text/plain;charset=utf-8';
             }
             return trimmed;
         }
-        return 'text/plain';
+        return 'text/plain;charset=utf-8';
     }
     if (base === 'text/html') {
         const parts = trimmed.split(';');

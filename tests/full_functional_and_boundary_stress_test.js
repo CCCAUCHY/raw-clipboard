@@ -1447,7 +1447,7 @@ await reporter.run('7.3 条目回放与 LRU 提升测试 (_restoreEntry 重置�
     ext._onKeyPress({ get_key_symbol: () => Clutter.KEY_Return });
     assert(globalThis._lastOwnedSource !== null, '_restoreEntry 必须成功生成原生数据源');
     assert(typeof globalThis._lastOwnedSource[RESTORE_NONCE] === 'string', '数据源对象上需挂载一次性回环标识');
-    assert(globalThis._lastOwnedSource.get_mimetypes()[0] === 'text/plain', '回灌时保持源声明的 text/plain，不额外拼接 charset');
+    assert(globalThis._lastOwnedSource.get_mimetypes()[0] === 'text/plain;charset=utf-8', '回灌时使用标准的 text/plain;charset=utf-8，确保 Firefox/GTK 正常粘贴');
 
     let realReadCalled = false;
     const realSource = globalThis._lastOwnedSource;
@@ -4872,7 +4872,7 @@ await reporter.run('16.6 复合类型最高兼容性纯文本优先回灌测试 
     // 检查回灌写回的剪贴板源
     const restoredSource = globalThis._lastOwnedSource;
     assert(restoredSource !== null, '已调用 set_owner 写回剪贴板源');
-    assert(restoredSource.get_mimetypes()[0] === 'text/plain', '复合类型默认回灌 MIME 必须为最高兼容性的 text/plain');
+    assert(restoredSource.get_mimetypes()[0] === 'text/plain;charset=utf-8', '复合类型默认回灌 MIME 必须为最高兼容性的 text/plain;charset=utf-8');
     assert(typeof restoredSource[RESTORE_NONCE] === 'string', '回灌源挂载了防回环一次性 RESTORE_NONCE');
 
     ext.disable();
@@ -4941,7 +4941,7 @@ await reporter.run('16.7 左侧 48x48 扁平化正方形类型按钮多格式回
 
     const restoredTextSource = globalThis._lastOwnedSource;
     assert(restoredTextSource !== null, '点击纯文本按钮成功写回剪贴板');
-    assert(restoredTextSource.get_mimetypes()[0] === 'text/plain', '回灌 MIME 必须为 text/plain');
+    assert(restoredTextSource.get_mimetypes()[0] === 'text/plain;charset=utf-8', '回灌 MIME 必须为 text/plain;charset=utf-8');
     assert(typeof restoredTextSource[RESTORE_NONCE] === 'string', '回灌源挂载防回环 RESTORE_NONCE');
 
     // 4. 再次打开弹窗，点击多类型槽位的第 2 个按钮 (HTML 图标): 以富文本形式回灌系统剪贴板
@@ -5038,10 +5038,10 @@ await reporter.run('16.10 复合类型纯文本回灌兜底与防 0 字节回灌
 
     const restored = globalThis._lastOwnedSource;
     assert(restored !== null, '触发 fallback 从 HTML 标签剥离文本并成功回灌');
-    assert(restored.get_mimetypes()[0] === 'text/plain', '回灌 MIME 为 text/plain');
+    assert(restored.get_mimetypes()[0] === 'text/plain;charset=utf-8', '回灌 MIME 为 text/plain;charset=utf-8');
     assert(typeof restored[RESTORE_NONCE] === 'string', '挂载防回环 RESTORE_NONCE');
 
-    const inStream = await callAsync(restored, 'read_async', 'read_finish', 'text/plain', null);
+    const inStream = await callAsync(restored, 'read_async', 'read_finish', restored.get_mimetypes()[0], null);
     const chunk = await callAsync(inStream, 'read_bytes_async', 'read_bytes_finish', 1024, GLib.PRIORITY_DEFAULT, null);
     assert(chunk.get_size() > 0, '回灌字节数大于 0，绝非 0 字节');
     const text = new TextDecoder().decode(chunk.get_data ? chunk.get_data() : chunk.toArray());
@@ -5087,12 +5087,12 @@ await reporter.run('16.11 参数化 MIME 归一化捕获与跨应用去重测试
     assert(getExtItemCount(ext) === 1, '相同文本跨应用复制 100% 命中去重，条目数保持 1');
     assert(ext._getEntry(0).preview === textA, '条目内容正确');
 
-    // 3. 验证回灌时向系统剪贴板发布的 MIME 必须为规范的 text/plain，不得携带 charset 参数以免火狐等 Wayland 客户端无法匹配
+    // 3. 验证回灌时向系统剪贴板发布的 MIME 必须为最高兼容性的 text/plain;charset=utf-8，确保火狐与 GTK/Wayland 应用正常粘贴
     globalThis._lastOwnedSource = null;
     ext._restoreEntry(ext._getEntry(0));
     const restored = globalThis._lastOwnedSource;
     assert(restored !== null, '成功回灌纯文本条目');
-    assert(restored.get_mimetypes()[0] === 'text/plain', '回灌 MIME 必须为规范的 text/plain，杜绝 text/plain;charset=UTF-8 导致火狐无法粘贴');
+    assert(restored.get_mimetypes()[0] === 'text/plain;charset=utf-8', '回灌 MIME 必须为最高兼容性的 text/plain;charset=utf-8，确保火狐与 GTK/Wayland 应用正常粘贴');
 
     ext.disable();
 });
