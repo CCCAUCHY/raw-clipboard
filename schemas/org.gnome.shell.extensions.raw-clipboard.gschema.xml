@@ -21,8 +21,8 @@
     <key name="max-total-size-mb" type="i">
       <default>1024</default>
       <range min="50" max="4096"/>
-      <summary>Total history memory limit in MB</summary>
-      <description>Maximum total memory in megabytes for all clipboard entries combined (50 to 4096 MB)</description>
+      <summary>Storage tree physical capacity limit in MB</summary>
+      <description>Maximum physical storage tree memory in megabytes for all clipboard entries combined (50 to 4096 MB)</description>
     </key>
     <key name="max-thumbnail-dimension" type="i">
       <default>4096</default>
