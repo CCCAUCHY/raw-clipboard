@@ -732,7 +732,7 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
         return {
             title: clean.length > 1000 ? `${safeSlice(clean, 1000)}…` : (clean || (isEn ? '(Empty text)' : '(空文本)')),
             subtitle: `${isEn ? 'Multi-type' : '多类型'} · ${sizeStr}`,
-            icon: ICON_HTML,
+            icon: ICON_TEXT,
             isEmptyText: isEmpty,
         };
     }
@@ -1210,18 +1210,18 @@ export default class RawClipboardExtension extends Extension {
 
         if (core.type === 'composite') {
             entryFormats.push({
-                mime: core.htmlMime || 'text/html',
-                type: 'html',
-                icon: ICON_HTML,
-                label: isEn ? 'HTML' : '富文本',
-                get bytes() { return entryRef.htmlBytes; },
-            });
-            entryFormats.push({
                 mime: core.textMime || 'text/plain',
                 type: 'text',
                 icon: ICON_TEXT,
                 label: isEn ? 'Text' : '纯文本',
                 get bytes() { return entryRef.textBytes; },
+            });
+            entryFormats.push({
+                mime: core.htmlMime || 'text/html',
+                type: 'html',
+                icon: ICON_HTML,
+                label: isEn ? 'HTML' : '富文本',
+                get bytes() { return entryRef.htmlBytes; },
             });
         } else if (core.type === 'text') {
             entryFormats.push({
@@ -1926,8 +1926,8 @@ export default class RawClipboardExtension extends Extension {
                         ? 'text/plain'
                         : (textRes.mime || core.textMime || 'text/plain');
                     compositeParts = [
-                        { mime: core.htmlMime, bytes: htmlBytes },
                         { mime: core.textMime, bytes: textBytes },
+                        { mime: core.htmlMime, bytes: htmlBytes },
                     ];
                     gBytes = packCompositeBytes(compositeParts);
                     size = htmlBytes.get_size() + textBytes.get_size();
@@ -1978,7 +1978,7 @@ export default class RawClipboardExtension extends Extension {
 
             // 投递前缀树与查重
             const insertResult = this.#radixTree.insert(core.mime, gBytes, leafNode => {
-                const extra = compositeParts ? { textBytes: compositeParts[1]?.bytes, htmlBytes: compositeParts[0]?.bytes } : null;
+                const extra = compositeParts ? { textBytes: compositeParts[0]?.bytes, htmlBytes: compositeParts[1]?.bytes } : null;
                 return this._buildEntry(leafNode, core, gBytes, size, copyTime, extra);
             });
 
@@ -2095,7 +2095,7 @@ export default class RawClipboardExtension extends Extension {
         const entrySize = typeof entry?.size === 'number' ? entry.size : (entry?.bytes?.get_size ? entry.bytes.get_size() : 0);
         if (entrySize <= 0) return;
         const selectedMime = targetMime || ((entry.type === 'composite')
-            ? (entry.formats?.[0]?.mime || entry.htmlMime || 'text/html')
+            ? (entry.formats?.[0]?.mime || entry.textMime || 'text/plain')
             : (entry.formats?.[0]?.mime || entry.mime));
 
         try {
@@ -2176,7 +2176,7 @@ export default class RawClipboardExtension extends Extension {
     _restoreEntry(entry) {
         if (!entry) return;
         const defaultMime = (entry.type === 'composite')
-            ? (entry.formats?.[0]?.mime || entry.htmlMime || 'text/html')
+            ? (entry.formats?.[0]?.mime || entry.textMime || 'text/plain')
             : (entry.formats?.[0]?.mime || entry.mime);
         this._restoreEntryFormat(entry, defaultMime);
     }

@@ -4841,7 +4841,7 @@ await reporter.run('16.5 多类型右键菜单操作与“复制文本”测试 
     ext.disable();
 });
 
-await reporter.run('16.6 复合类型原样富文本回灌测试 (优先回灌 text/html 保持富文本排版格式，挂载防回环 nonce)', async () => {
+await reporter.run('16.6 复合类型最高兼容性纯文本优先回灌测试 (默认回灌 text/plain 保证跨应用全通用，挂载防回环 nonce)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -4872,7 +4872,7 @@ await reporter.run('16.6 复合类型原样富文本回灌测试 (优先回灌 t
     // 检查回灌写回的剪贴板源
     const restoredSource = globalThis._lastOwnedSource;
     assert(restoredSource !== null, '已调用 set_owner 写回剪贴板源');
-    assert(restoredSource.get_mimetypes()[0] === 'text/html', '复合类型回灌时 MIME 必须为 text/html 以保证富文本格式原样还原');
+    assert(restoredSource.get_mimetypes()[0] === 'text/plain', '复合类型默认回灌 MIME 必须为最高兼容性的 text/plain');
     assert(typeof restoredSource[RESTORE_NONCE] === 'string', '回灌源挂载了防回环一次性 RESTORE_NONCE');
 
     ext.disable();
@@ -4913,9 +4913,9 @@ await reporter.run('16.7 左侧 48x48 扁平化正方形类型按钮多格式回
     assert(singleEntry.formats[0].mime === 'text/plain', '单类型格式 MIME 为 text/plain');
 
     assert(Array.isArray(multiEntry.formats), '多类型条目具有 formats 数组');
-    assert(multiEntry.formats.length === 2, '多类型条目 formats 包含 2 种格式 (HTML 与纯文本)');
-    assert(multiEntry.formats[0].mime === 'text/html', '多类型格式 0 为 text/html');
-    assert(multiEntry.formats[1].mime === 'text/plain', '多类型格式 1 为 text/plain');
+    assert(multiEntry.formats.length === 2, '多类型条目 formats 包含 2 种格式 (纯文本与 HTML)');
+    assert(multiEntry.formats[0].mime === 'text/plain', '多类型格式 0 为 text/plain (最高兼容性优先)');
+    assert(multiEntry.formats[1].mime === 'text/html', '多类型格式 1 为 text/html (富文本)');
 
     // 打开弹窗，验证 UI 槽位上的 48x48 扁平化正方形类型按钮
     ext._openPopup();
@@ -4927,29 +4927,29 @@ await reporter.run('16.7 左侧 48x48 扁平化正方形类型按钮多格式回
     assert(slot0.typeBtn0.visible === true, '单类型主按钮显示');
     assert(slot0.typeBtn1.visible === false, '单类型副按钮隐藏');
 
-    // 槽位 1 (多类型): 并排显示 2 个 48x48 按钮 (HTML 按钮与纯文本按钮)
+    // 槽位 1 (多类型): 并排显示 2 个 48x48 按钮 (纯文本按钮与 HTML 按钮)
     const slot1 = ext._itemSlots[1];
-    assert(slot1.typeBtn0.width === 48 && slot1.typeBtn0.height === 48, '多类型 HTML 按钮严格为 48x48 正方形');
-    assert(slot1.typeBtn1.width === 48 && slot1.typeBtn1.height === 48, '多类型纯文本按钮严格为 48x48 正方形');
-    assert(slot1.typeBtn0.has_style_class_name('first-btn') === true, 'HTML 按钮具有 first-btn 左侧圆角样式');
-    assert(slot1.typeBtn0.visible === true, '多类型 HTML 按钮显示');
-    assert(slot1.typeBtn1.visible === true, '多类型纯文本按钮显示');
+    assert(slot1.typeBtn0.width === 48 && slot1.typeBtn0.height === 48, '多类型纯文本按钮严格为 48x48 正方形');
+    assert(slot1.typeBtn1.width === 48 && slot1.typeBtn1.height === 48, '多类型 HTML 按钮严格为 48x48 正方形');
+    assert(slot1.typeBtn0.has_style_class_name('first-btn') === true, '纯文本按钮具有 first-btn 左侧圆角样式');
+    assert(slot1.typeBtn0.visible === true, '多类型纯文本按钮显示');
+    assert(slot1.typeBtn1.visible === true, '多类型 HTML 按钮显示');
 
-    // 3. 点击多类型槽位的第 2 个按钮 (纯文本图标): 绕过目标应用门禁，以纯文本形式回灌系统剪贴板
+    // 3. 点击多类型槽位的第 1 个按钮 (纯文本图标): 兼容性最高，以纯文本形式回灌系统剪贴板
     globalThis._lastOwnedSource = null;
-    slot1.typeBtn1.emit('clicked');
+    slot1.typeBtn0.emit('clicked');
 
     const restoredTextSource = globalThis._lastOwnedSource;
     assert(restoredTextSource !== null, '点击纯文本按钮成功写回剪贴板');
     assert(restoredTextSource.get_mimetypes()[0] === 'text/plain', '回灌 MIME 必须为 text/plain');
     assert(typeof restoredTextSource[RESTORE_NONCE] === 'string', '回灌源挂载防回环 RESTORE_NONCE');
 
-    // 4. 再次打开弹窗，点击多类型槽位的第 1 个按钮 (HTML 图标): 以富文本形式回灌系统剪贴板
+    // 4. 再次打开弹窗，点击多类型槽位的第 2 个按钮 (HTML 图标): 以富文本形式回灌系统剪贴板
     ext._openPopup();
     // 此时多类型已由 LRU 提升至队首 (槽位 0)
     const newSlot0 = ext._itemSlots[0];
     globalThis._lastOwnedSource = null;
-    newSlot0.typeBtn0.emit('clicked');
+    newSlot0.typeBtn1.emit('clicked');
 
     const restoredHtmlSource = globalThis._lastOwnedSource;
     assert(restoredHtmlSource !== null, '点击 HTML 按钮成功写回剪贴板');
@@ -5026,7 +5026,7 @@ await reporter.run('16.10 复合类型纯文本回灌兜底与防 0 字节回灌
         type: 'composite',
         mime: 'composite',
         size: 100,
-        formats: [{ mime: 'text/html', type: 'html' }, { mime: 'text/plain', type: 'text' }],
+        formats: [{ mime: 'text/plain', type: 'text' }, { mime: 'text/html', type: 'html' }],
         bytes: new GLib.Bytes(new Uint8Array(0)),
         htmlBytes: new GLib.Bytes(new TextEncoder().encode('<div><b>Fallback Message</b></div>')),
         textBytes: new GLib.Bytes(new Uint8Array(0)),
@@ -5150,8 +5150,8 @@ await reporter.run('12.17 复合条目纯单树存储与按需解包验证 (零�
 
     // 验证 formats[0].bytes 和 formats[1].bytes 按需解包的正确性
     const dec = new TextDecoder();
-    assert(dec.decode(entry.formats[0].bytes.get_data()) === html, '按需解包 HTML 格式一致');
-    assert(dec.decode(entry.formats[1].bytes.get_data()) === text, '按需解包 Text 格式一致');
+    assert(dec.decode(entry.formats[0].bytes.get_data()) === text, '按需解包 Text 格式一致');
+    assert(dec.decode(entry.formats[1].bytes.get_data()) === html, '按需解包 HTML 格式一致');
 
     ext.disable();
 });
