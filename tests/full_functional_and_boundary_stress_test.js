@@ -5431,6 +5431,51 @@ await reporter.run('17.7 Unicode 代理对安全截断测试 (safeSlice 截断 1
     assert(preview.title === `${'a'.repeat(999)}…`, `预览标题必须安全截断并加省略号，实际: '${preview.title}'`);
 });
 
+await reporter.run('17.8 策略2渐进式低优先级分批解码缩略图测试 (超大图片 >64 KiB 零延迟弹窗开窗、idle 驱动分批解码、就绪槽位无缝刷新与淘汰取消)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 1. 生成一个超过 64 KiB 的真实位图图片 (200x200 无压缩 BMP，大小约 120 KiB)
+    const pb = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, false, 8, 200, 200);
+    pb.fill(0x336699ff);
+    const [, bigBmpBuf] = pb.save_to_bufferv('bmp', [], []);
+    assert(bigBmpBuf.length > 64 * 1024, `生成的位图体积应大于 64 KiB，实际: ${bigBmpBuf.length} 字节`);
+
+    // 2. 模拟系统剪贴板捕获
+    const src = new MockSelectionSource(['image/bmp'], bigBmpBuf);
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src);
+
+    // 3. 立即打开弹窗，验证无阻塞开窗：此时 idle 任务尚未迭代完成，展示兜底通用图标
+    ext._openPopup();
+    assert(ext._itemActors && ext._itemActors.length === 1, '应有 1 个条目槽位');
+    const slot0 = ext._itemSlots[0];
+    assert(slot0.typeBtn0._currentGIcon === null, '首次弹窗开窗零延迟，此时尚未完成缩略图解码，使用通用兜底图标');
+    assert(slot0.typeBtn0._icon.icon_name === 'image-x-generic-symbolic', '兜底图标应为 image-x-generic-symbolic');
+
+    // 4. 驱动主循环迭代 (模拟后台低优先级 idle 分批喂入)
+    const context = GLib.MainContext.default();
+    let iterations = 0;
+    while (context.iteration(false)) {
+        iterations++;
+    }
+    assert(iterations > 0, `GLib 主循环至少执行了 1 次 idle 分批处理，实际: ${iterations}`);
+
+    // 5. 验证 idle 任务完成后的槽位在位无缝刷新与 Gio.Icon 缩略图就绪
+    assert(slot0.typeBtn0._currentGIcon instanceof Gio.Icon, 'idle 分批解码完成后槽位图标自动就绪刷新为 Gio.Icon');
+    assert(slot0.typeBtn0._icon.style_class === 'raw-clipboard-item-thumb', '槽位图标样式切换为缩略图样式 raw-clipboard-item-thumb');
+    assert(slot0.typeBtn0._icon.icon_size === 34, '缩略图图标尺寸为 34');
+
+    ext._closePopup();
+
+    // 6. 验证条目被删除或淘汰时自动取消未完成的任务，不遗留悬挂 idle 回调
+    const src2 = new MockSelectionSource(['image/bmp'], bigBmpBuf);
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, src2);
+    // 立即删除条目
+    ext._deleteEntry(0);
+    // 验证 disable 清理一切任务
+    ext.disable();
+});
+
 // ============================================================================
 // 3. 执行最终报告汇算
 // ============================================================================

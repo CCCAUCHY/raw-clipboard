@@ -820,6 +820,8 @@ export default class RawClipboardExtension extends Extension {
     #unknownTypes = new Map();
     #previewMd5ByEntry = new WeakMap();
     #iconCache = new Map();
+    #thumbnailCache = new WeakMap();
+    #thumbnailTasks = new Map();
 
     _currentReadCancellable = null;
     _undoStack = [];
@@ -1224,18 +1226,10 @@ export default class RawClipboardExtension extends Extension {
                 return null;
             },
             get thumbIcon() {
-                if (cachedThumb === undefined) {
-                    if (core.type === 'image') {
-                        let maxDim = 4096;
-                        try {
-                            if (thisRef._settings?.settings_schema?.has_key('max-thumbnail-dimension')) {
-                                maxDim = thisRef._settings.get_int('max-thumbnail-dimension');
-                            }
-                        } catch {}
-                        cachedThumb = thisRef._generateThumbnail(this.bytes, core.mime, maxDim);
-                    } else cachedThumb = null;
+                if (core.type === 'image') {
+                    return thisRef._getThumbnail(entryRef, this.bytes, core.mime);
                 }
-                return cachedThumb;
+                return null;
             },
             preview: previewInfo.title,
             subtitle: previewInfo.subtitle,
@@ -1244,6 +1238,10 @@ export default class RawClipboardExtension extends Extension {
             get time() { return entryTime; },
             set time(val) { if (typeof val === 'number') entryTime = val; },
         });
+
+        if (core.type === 'image') {
+            thisRef._ensureThumbnail(entryRef, gBytes, core.mime);
+        }
 
         return entryRef;
     }
@@ -1255,6 +1253,8 @@ export default class RawClipboardExtension extends Extension {
         this.#deletedEntries.clear();
         this.#unknownTypes.clear();
         this.#activeNonces.clear();
+        this.#thumbnailTasks.clear();
+        this.#thumbnailCache = new WeakMap();
         this._undoStack = [];
         this._currentReadCancellable = null;
         this._selectionOwnerId = -1;
@@ -1346,6 +1346,7 @@ export default class RawClipboardExtension extends Extension {
         this.#unknownTypes.clear();
         this.#activeNonces.clear();
         this.#iconCache.clear();
+        this._cancelAllThumbnailTasks();
         this._isRestoring = false;
         this._settings = null;
     }
@@ -1366,22 +1367,53 @@ export default class RawClipboardExtension extends Extension {
         this._hasKeybinding = (action !== 0 && (!Meta.KeyBindingAction || action !== Meta.KeyBindingAction.NONE));
     }
 
-    _generateThumbnail(gBytes, mime, maxDim = 4096) {
+    _cancelThumbnailTask(entry) {
+        if (!entry) return;
+        const sourceId = this.#thumbnailTasks.get(entry);
+        if (sourceId) {
+            try { GLib.source_remove(sourceId); } catch {}
+            this.#thumbnailTasks.delete(entry);
+        }
+    }
+
+    _cancelAllThumbnailTasks() {
+        for (const [, sourceId] of this.#thumbnailTasks) {
+            try { GLib.source_remove(sourceId); } catch {}
+        }
+        this.#thumbnailTasks.clear();
+    }
+
+    _getMaxThumbnailDim() {
+        let maxDim = 4096;
+        try {
+            if (this._settings?.settings_schema?.has_key('max-thumbnail-dimension')) {
+                maxDim = this._settings.get_int('max-thumbnail-dimension');
+            }
+        } catch {}
+        return maxDim;
+    }
+
+    _setupThumbnailLoader(mime, maxDim, fileSize) {
         const BITMAP_MIMES = ['image/png', 'image/jpeg', 'image/webp', 'image/bmp', 'image/gif'];
         if (!BITMAP_MIMES.includes(mime)) return null;
 
         let loader = null;
         try { loader = GdkPixbuf.PixbufLoader.new_with_mime_type(mime); } catch { return null; }
 
-        const fileSize = gBytes.get_size();
-        let exceeded = false, sizePrepared = false;
-        let origW = 0, origH = 0, maxMemoryLimit = 0;
+        const state = {
+            loader,
+            exceeded: false,
+            sizePrepared: false,
+            maxMemoryLimit: 0,
+            origW: 0,
+            origH: 0,
+        };
 
         loader.connect('size-prepared', (l, w, h) => {
-            sizePrepared = true;
-            origW = w; origH = h;
+            state.sizePrepared = true;
+            state.origW = w; state.origH = h;
             if (w <= 0 || h <= 0 || w > maxDim || h > maxDim || (w * h) > maxDim * maxDim) {
-                exceeded = true;
+                state.exceeded = true;
                 l.set_size(1, 1);
                 return;
             }
@@ -1399,43 +1431,152 @@ export default class RawClipboardExtension extends Extension {
                 const channels = pix.get_n_channels ? pix.get_n_channels() : 4;
                 const bits = pix.get_bits_per_sample ? pix.get_bits_per_sample() : 8;
                 const bpp = channels * Math.ceil(bits / 8);
-                maxMemoryLimit = origW * origH * bpp;
-                if (fileSize > (maxMemoryLimit + 1048576)) {
-                    exceeded = true;
+                state.maxMemoryLimit = state.origW * state.origH * bpp;
+                if (fileSize > (state.maxMemoryLimit + 1048576)) {
+                    state.exceeded = true;
                     return;
                 }
                 const byteLen = pix.get_byte_length ? pix.get_byte_length() : 0;
                 const rowstride = pix.get_rowstride ? pix.get_rowstride() : (pix.get_width() * bpp);
-                if (byteLen > rowstride * pix.get_height()) exceeded = true;
+                if (byteLen > rowstride * pix.get_height()) state.exceeded = true;
             }
         });
 
-        try {
-            const stream = Gio.MemoryInputStream.new_from_bytes(gBytes);
-            const CHUNK = 64 * 1024;
-            let totalFed = 0;
-            while (!exceeded) {
-                const chunk = stream.read_bytes(CHUNK, null);
-                if (!chunk || chunk.get_size() === 0) break;
-                totalFed += chunk.get_size();
-                if (sizePrepared && maxMemoryLimit > 0 && totalFed > (maxMemoryLimit + 1048576)) {
-                    exceeded = true;
-                    break;
-                }
-                loader.write_bytes(chunk);
-            }
-        } catch {}
+        return state;
+    }
 
-        try { loader.close(); } catch {}
-        if (exceeded || !sizePrepared) return null;
-
+    _finishThumbnailLoader(state) {
+        try { state.loader.close(); } catch {}
+        if (state.exceeded || !state.sizePrepared) return null;
         try {
-            const pixbuf = loader.get_pixbuf();
+            const pixbuf = state.loader.get_pixbuf();
             if (!pixbuf) return null;
             const [ok, buffer] = pixbuf.save_to_bufferv('png', [], []);
             if (!ok) return null;
             return Gio.BytesIcon.new(new GLib.Bytes(buffer));
         } catch { return null; }
+    }
+
+    _generateThumbnail(gBytes, mime, maxDim = 4096) {
+        const fileSize = gBytes?.get_size ? gBytes.get_size() : 0;
+        const state = this._setupThumbnailLoader(mime, maxDim, fileSize);
+        if (!state) return null;
+
+        try {
+            const stream = Gio.MemoryInputStream.new_from_bytes(gBytes);
+            const CHUNK = 64 * 1024;
+            let totalFed = 0;
+            while (!state.exceeded) {
+                const chunk = stream.read_bytes(CHUNK, null);
+                if (!chunk || chunk.get_size() === 0) break;
+                totalFed += chunk.get_size();
+                if (state.sizePrepared && state.maxMemoryLimit > 0 && totalFed > (state.maxMemoryLimit + 1048576)) {
+                    state.exceeded = true;
+                    break;
+                }
+                state.loader.write_bytes(chunk);
+            }
+        } catch {}
+
+        return this._finishThumbnailLoader(state);
+    }
+
+    _startIdleThumbnailTask(entry, gBytes, mime, maxDim) {
+        if (this.#thumbnailTasks.has(entry)) return;
+        const fileSize = gBytes?.get_size ? gBytes.get_size() : 0;
+        const state = this._setupThumbnailLoader(mime, maxDim, fileSize);
+        if (!state) {
+            this.#thumbnailCache.set(entry, null);
+            return;
+        }
+
+        const stream = Gio.MemoryInputStream.new_from_bytes(gBytes);
+        const CHUNK = 64 * 1024;
+        let totalFed = 0;
+
+        const cleanup = () => {
+            if (this.#thumbnailTasks.get(entry) === sourceId) {
+                this.#thumbnailTasks.delete(entry);
+            }
+            try { stream.close(null); } catch {}
+        };
+
+        const sourceId = GLib.idle_add(GLib.PRIORITY_LOW, () => {
+            if (!this.#thumbnailTasks.has(entry) || this.#thumbnailTasks.get(entry) !== sourceId) {
+                cleanup();
+                try { state.loader.close(); } catch {}
+                return GLib.SOURCE_REMOVE;
+            }
+
+            try {
+                for (let i = 0; i < 2; i++) {
+                    if (state.exceeded) break;
+                    const chunk = stream.read_bytes(CHUNK, null);
+                    if (!chunk || chunk.get_size() === 0) {
+                        cleanup();
+                        const icon = this._finishThumbnailLoader(state);
+                        this.#thumbnailCache.set(entry, icon);
+                        if (icon) this._onThumbnailReady(entry, icon);
+                        return GLib.SOURCE_REMOVE;
+                    }
+                    totalFed += chunk.get_size();
+                    if (state.sizePrepared && state.maxMemoryLimit > 0 && totalFed > (state.maxMemoryLimit + 1048576)) {
+                        state.exceeded = true;
+                        break;
+                    }
+                    state.loader.write_bytes(chunk);
+                }
+
+                if (state.exceeded) {
+                    cleanup();
+                    try { state.loader.close(); } catch {}
+                    this.#thumbnailCache.set(entry, null);
+                    return GLib.SOURCE_REMOVE;
+                }
+
+                return GLib.SOURCE_CONTINUE;
+            } catch {
+                cleanup();
+                try { state.loader.close(); } catch {}
+                this.#thumbnailCache.set(entry, null);
+                return GLib.SOURCE_REMOVE;
+            }
+        });
+
+        this.#thumbnailTasks.set(entry, sourceId);
+    }
+
+    _ensureThumbnail(entry, gBytes, mime) {
+        if (!entry || !gBytes || this.#thumbnailCache.has(entry) || this.#thumbnailTasks.has(entry)) {
+            return;
+        }
+        const maxDim = this._getMaxThumbnailDim();
+        const size = gBytes.get_size ? gBytes.get_size() : 0;
+        if (size <= 64 * 1024) {
+            const icon = this._generateThumbnail(gBytes, mime, maxDim);
+            this.#thumbnailCache.set(entry, icon);
+        } else {
+            this._startIdleThumbnailTask(entry, gBytes, mime, maxDim);
+        }
+    }
+
+    _getThumbnail(entry, gBytes, mime) {
+        if (!entry) return null;
+        if (this.#thumbnailCache.has(entry)) {
+            return this.#thumbnailCache.get(entry);
+        }
+        this._ensureThumbnail(entry, gBytes, mime);
+        return this.#thumbnailCache.get(entry) || null;
+    }
+
+    _onThumbnailReady(entry, icon) {
+        if (!this._container || !this._itemSlots) return;
+        for (const slot of this._itemSlots) {
+            if (slot.currentEntry === entry) {
+                this._applySlotIcon(slot);
+                break;
+            }
+        }
     }
 
     _queueRender() {
@@ -1794,6 +1935,7 @@ export default class RawClipboardExtension extends Extension {
         const maxTotalBytes = maxTotalMb * 1024 * 1024;
 
         const purgeItem = (item) => {
+            this._cancelThumbnailTask(item);
             this.#radixTree.remove(item);
             if (this.#deletedEntries.has(item)) {
                 this.#deletedEntries.delete(item);
@@ -2020,11 +2162,15 @@ export default class RawClipboardExtension extends Extension {
             if (typeof indexOrEntry === 'number') {
                 if (!Number.isInteger(indexOrEntry) || indexOrEntry < 0 || indexOrEntry >= this.#history.length) return;
                 const [removed] = this.#history.splice(indexOrEntry, 1);
-                if (removed) this.#radixTree.remove(removed);
+                if (removed) {
+                    this._cancelThumbnailTask(removed);
+                    this.#radixTree.remove(removed);
+                }
             } else if (indexOrEntry && typeof indexOrEntry === 'object') {
                 const idx = this.#history.indexOf(indexOrEntry);
                 if (idx !== -1) {
                     this.#history.splice(idx, 1);
+                    this._cancelThumbnailTask(indexOrEntry);
                     this.#radixTree.remove(indexOrEntry);
                 }
             }
@@ -2083,6 +2229,7 @@ export default class RawClipboardExtension extends Extension {
         if (this.#deletedEntries.size > 0) {
             this.#history = this.#history.filter(entry => {
                 if (this.#deletedEntries.has(entry)) {
+                    this._cancelThumbnailTask(entry);
                     this.#radixTree.remove(entry);
                     return false;
                 }
