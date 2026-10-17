@@ -145,9 +145,19 @@ class MockLabel extends MockActor {
 class MockIcon extends MockActor {
     constructor(props = {}) {
         super(props);
-        this.gicon = props.gicon;
-        this.icon_name = props.icon_name;
+        this._gicon = props.gicon || null;
+        this._icon_name = props.icon_name || null;
         this.icon_size = props.icon_size;
+    }
+    get gicon() { return this._gicon; }
+    set gicon(v) {
+        this._gicon = v;
+        if (v) this._icon_name = null;
+    }
+    get icon_name() { return this._icon_name || this._resolvedIconName || null; }
+    set icon_name(v) {
+        this._icon_name = v;
+        if (v) this._gicon = null;
     }
 }
 
@@ -4173,7 +4183,7 @@ await reporter.run('13.7 纯键盘直接响应与条目左侧图标悬停搜索/
     assert(ext._inSearchMode === false, '退出搜索模式');
     assert(ext._itemSlots[0].currentEntry.preview === 'English Note', '第0槽位为最新加入的 English Note');
     const slot0Icon = ext._itemSlots[0].iconActor;
-    assert(slot0Icon.icon_name === 'lang-typedef-symbolic', '显示文本类型图标');
+    assert(slot0Icon.icon_name === 'text-t-symbolic', '显示文本类型图标 (text-t-symbolic)');
     assert(slot0Icon.reactive === false, '左侧图标彻底设为非 reactive，废除原有悬停/点击搜索');
 
     // 5. 右键长条目 (150 字符的 'A'...)：弹出右键菜单，点击“带入搜索”只带入前 64 字符并覆盖搜索框

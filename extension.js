@@ -19,7 +19,7 @@ export const OVERALL_TIMEOUT_MS = 15000;
 export const MAX_SEARCH_QUERY_LEN = 128;
 export const MAX_SEARCH_IMPORT_LEN = 64;
 
-export const ICON_TEXT = 'lang-typedef-symbolic';
+export const ICON_TEXT = 'text-t-symbolic';
 export const ICON_HTML = 'code-symbolic';
 export const ICON_FILES = 'folder-symbolic';
 export const ICON_IMAGE = 'image-x-generic-symbolic';
@@ -1578,6 +1578,19 @@ export default class RawClipboardExtension extends Extension {
         this._restoreEntryFormat(entry, defaultMime);
     }
 
+    _resolveIcon(name) {
+        const defaultName = name || ICON_RAW;
+        if (this.path) {
+            const localSvg = GLib.build_filenamev([this.path, 'icons', `${defaultName}.svg`]);
+            if (GLib.file_test(localSvg, GLib.FileTest.EXISTS)) {
+                try {
+                    return { gicon: Gio.icon_new_for_string(localSvg), iconName: defaultName };
+                } catch {}
+            }
+        }
+        return { gicon: null, iconName: defaultName };
+    }
+
     _getAvailableConversions(entry) {
         if (!entry) return [];
         const isEn = this._getLanguage() === 'en-US';
@@ -2210,7 +2223,15 @@ export default class RawClipboardExtension extends Extension {
 
         const createMenuItem = (iconName, labelText, onActivate) => {
             const box = new St.BoxLayout({ orientation: Clutter.Orientation.HORIZONTAL, y_align: Clutter.ActorAlign.CENTER, x_expand: true });
-            const icon = new St.Icon({ icon_name: iconName, style_class: 'raw-clipboard-menu-item-icon', icon_size: 16, y_align: Clutter.ActorAlign.CENTER });
+            const { gicon, iconName: resolvedName } = this._resolveIcon(iconName);
+            const iconProps = { style_class: 'raw-clipboard-menu-item-icon', icon_size: 16, y_align: Clutter.ActorAlign.CENTER };
+            if (gicon) {
+                iconProps.gicon = gicon;
+            } else {
+                iconProps.icon_name = resolvedName;
+            }
+            const icon = new St.Icon(iconProps);
+            icon._resolvedIconName = resolvedName;
             const label = new St.Label({ text: labelText, style_class: 'raw-clipboard-menu-item-label', y_align: Clutter.ActorAlign.CENTER });
             if (label.clutter_text) label.clutter_text.use_markup = false;
             box.add_child(icon);
@@ -2300,6 +2321,8 @@ export default class RawClipboardExtension extends Extension {
                     slot.currentEntry = null;
                     slot.currentGIcon = null;
                     slot.currentIconName = null;
+                    slot.currentGIcon1 = null;
+                    slot.currentIconName1 = null;
                     if (slot.typeBtn0) slot.typeBtn0._targetMime = null;
                     if (slot.typeBtn1) slot.typeBtn1._targetMime = null;
                     try { slot.itemBox.destroy(); } catch {}
@@ -2536,6 +2559,8 @@ export default class RawClipboardExtension extends Extension {
             currentEntry: null,
             currentGIcon: null,
             currentIconName: null,
+            currentGIcon1: null,
+            currentIconName1: null,
         };
 
         const triggerDelete = () => {
@@ -2594,29 +2619,23 @@ export default class RawClipboardExtension extends Extension {
             if (slot.currentGIcon !== entry.thumbIcon) {
                 slot.typeBtn0._icon.icon_name = null;
                 slot.typeBtn0._icon.gicon = entry.thumbIcon;
+                slot.typeBtn0._icon._resolvedIconName = null;
                 slot.typeBtn0._icon.style_class = 'raw-clipboard-item-thumb';
                 slot.typeBtn0._icon.icon_size = 34;
                 slot.currentGIcon = entry.thumbIcon;
                 slot.currentIconName = null;
             }
         } else {
-            const resolveIcon = (name) => {
-                const defaultName = name || ICON_RAW;
-                if (this.path) {
-                    const localSvg = GLib.build_filenamev([this.path, 'icons', `${defaultName}.svg`]);
-                    if (GLib.file_test(localSvg, GLib.FileTest.EXISTS)) {
-                        try {
-                            return { gicon: Gio.icon_new_for_string(localSvg), iconName: defaultName };
-                        } catch {}
-                    }
-                }
-                return { gicon: null, iconName: defaultName };
-            };
-
-            const { gicon, iconName } = resolveIcon(fmt0.icon || entry.icon);
+            const { gicon, iconName } = this._resolveIcon(fmt0.icon || entry.icon);
             if (slot.currentIconName !== iconName || slot.currentGIcon !== gicon) {
-                slot.typeBtn0._icon.gicon = gicon;
-                slot.typeBtn0._icon.icon_name = iconName;
+                slot.typeBtn0._icon._resolvedIconName = iconName;
+                if (gicon) {
+                    slot.typeBtn0._icon.icon_name = null;
+                    slot.typeBtn0._icon.gicon = gicon;
+                } else {
+                    slot.typeBtn0._icon.gicon = null;
+                    slot.typeBtn0._icon.icon_name = iconName;
+                }
                 slot.typeBtn0._icon.style_class = 'raw-clipboard-item-icon';
                 slot.typeBtn0._icon.icon_size = 20;
                 slot.currentIconName = iconName;
@@ -2628,18 +2647,21 @@ export default class RawClipboardExtension extends Extension {
         if (formats.length > 1) {
             const fmt1 = formats[1];
             slot.typeBtn1._targetMime = fmt1.mime;
-            const defaultName1 = fmt1.icon || ICON_RAW;
-            let gicon1 = null;
-            if (this.path) {
-                const localSvg1 = GLib.build_filenamev([this.path, 'icons', `${defaultName1}.svg`]);
-                if (GLib.file_test(localSvg1, GLib.FileTest.EXISTS)) {
-                    try { gicon1 = Gio.icon_new_for_string(localSvg1); } catch {}
+            const { gicon: gicon1, iconName: iconName1 } = this._resolveIcon(fmt1.icon);
+            if (slot.currentIconName1 !== iconName1 || slot.currentGIcon1 !== gicon1) {
+                slot.typeBtn1._icon._resolvedIconName = iconName1;
+                if (gicon1) {
+                    slot.typeBtn1._icon.icon_name = null;
+                    slot.typeBtn1._icon.gicon = gicon1;
+                } else {
+                    slot.typeBtn1._icon.gicon = null;
+                    slot.typeBtn1._icon.icon_name = iconName1;
                 }
+                slot.typeBtn1._icon.style_class = 'raw-clipboard-item-icon';
+                slot.typeBtn1._icon.icon_size = 20;
+                slot.currentIconName1 = iconName1;
+                slot.currentGIcon1 = gicon1;
             }
-            slot.typeBtn1._icon.gicon = gicon1;
-            slot.typeBtn1._icon.icon_name = defaultName1;
-            slot.typeBtn1._icon.style_class = 'raw-clipboard-item-icon';
-            slot.typeBtn1._icon.icon_size = 20;
             slot.typeBtn1.show();
         } else {
             slot.typeBtn1._targetMime = null;

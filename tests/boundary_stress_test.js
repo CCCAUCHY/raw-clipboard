@@ -99,9 +99,19 @@ class MockLabel extends MockActor {
 class MockIcon extends MockActor {
     constructor(props = {}) {
         super(props);
-        this.gicon = props.gicon;
-        this.icon_name = props.icon_name;
+        this._gicon = props.gicon || null;
+        this._icon_name = props.icon_name || null;
         this.icon_size = props.icon_size;
+    }
+    get gicon() { return this._gicon; }
+    set gicon(v) {
+        this._gicon = v;
+        if (v) this._icon_name = null;
+    }
+    get icon_name() { return this._icon_name || this._resolvedIconName || null; }
+    set icon_name(v) {
+        this._icon_name = v;
+        if (v) this._gicon = null;
     }
 }
 
