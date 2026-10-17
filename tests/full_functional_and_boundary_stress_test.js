@@ -4351,6 +4351,14 @@ await reporter.run('14.3 历史条目动态多语言渲染与在位实时切换�
     assert(ext._itemSlots[0].subLabel.text.includes('文件'), '切回中文 文件');
     assert(ext._undoLabel.text === '撤销', '切回 撤销');
 
+    // 验证多语言切换影响范围严格控制在固定 UI 控件范围，用户文件名绝不被正则误翻译
+    const specialFileSrc = new MockSelectionSource(['text/uri-list'], new TextEncoder().encode('file:///home/user/%E6%96%87%E4%BB%B6%E5%88%97%E8%A1%A8\n')); // "文件列表"
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, specialFileSrc);
+    ext._settings.set_string('ui-language', 'en-US');
+    assert(ext._itemSlots[0].previewLabel.text === '文件列表', '文件名为“文件列表”时，切换英文严禁误翻译为 File List');
+    assert(ext._getEntryPreview(ext._getVisibleEntries()[0]) === '文件列表', '预览与带入搜索文本绝对一致');
+
+    ext._settings.set_string('ui-language', 'zh-CN');
     ext._closePopup();
     ext.disable();
 });

@@ -546,6 +546,7 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
                     title: isEn ? 'File List' : '文件列表',
                     subtitle: isEn ? 'Files/Folders · 0 items (path only, no disk read)' : '文件/目录 · 0 项 (仅存路径，不读内容)',
                     icon: ICON_FILES,
+                    fileCountStr: '0',
                 };
             }
             let totalCount = lines.length, isCapped = false;
@@ -588,6 +589,7 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
                 title,
                 subtitle: isEn ? `${label} · ${countStr} items (path only, no disk read)` : `${label} · ${countStr} 项 (仅存路径，不读内容)`,
                 icon: ICON_FILES,
+                fileCountStr: countStr,
             };
         } catch {
             return {
@@ -709,8 +711,11 @@ export default class RawClipboardExtension extends Extension {
         }
         if (entry.type === 'image') return entry.mime || '';
         if (entry.type === 'files') {
-            const match = (entry.subtitle || '').match(/(\d+\+?)\s*(?:项|items)/);
-            const countStr = match ? match[1] : '0';
+            let countStr = entry.fileCountStr;
+            if (!countStr) {
+                const match = (entry.subtitle || '').match(/(\d+\+?)\s*(?:项|items)/);
+                countStr = match ? match[1] : '0';
+            }
             return isEn
                 ? `Files/Folders · ${countStr} items (path only, no disk read)`
                 : `文件/目录 · ${countStr} 项 (仅存路径，不读内容)`;
@@ -722,24 +727,18 @@ export default class RawClipboardExtension extends Extension {
     _getEntryPreview(entry) {
         if (!entry) return '';
         const isEn = this._getLanguage() === 'en-US';
-        if (entry.type === 'image') return isEn ? `Image (${formatByteSize(entry.size)})` : `图片 (${formatByteSize(entry.size)})`;
-        if (entry.type === 'files') {
-            if (isEn) {
-                if (entry.preview === '文件列表') return 'File List';
-                if (entry.preview?.startsWith('文件列表 (')) return `File List (${formatByteSize(entry.size)})`;
-                return (entry.preview || '').replace(/等\s*(\d+\+?)\s*个文件夹/, 'and $1 folders').replace(/等\s*(\d+\+?)\s*项/, 'and $1 items').replace(/等\s*(\d+\+?)\s*个文件/, 'and $1 files');
-            }
-            if (entry.preview === 'File List') return '文件列表';
-            if (entry.preview?.startsWith('File List (')) return `文件列表 (${formatByteSize(entry.size)})`;
-            return (entry.preview || '').replace(/and\s*(\d+\+?)\s*folders/, '等 $1 个文件夹').replace(/and\s*(\d+\+?)\s*items/, '等 $1 项').replace(/and\s*(\d+\+?)\s*files/, '等 $1 个文件');
+        if (entry.type === 'image') {
+            return isEn ? `Image (${formatByteSize(entry.size)})` : `图片 (${formatByteSize(entry.size)})`;
+        }
+        if (entry.preview === '(空文本)' || entry.preview === '(Empty text)') {
+            return isEn ? '(Empty text)' : '(空文本)';
         }
         if (entry.type === 'unknown' || entry.type === 'raw') {
-            if (isEn && entry.preview === '未知类型') return 'Unknown Type';
-            if (!isEn && entry.preview === 'Unknown Type') return '未知类型';
+            if (entry.preview === '未知类型' || entry.preview === 'Unknown Type') {
+                return isEn ? 'Unknown Type' : '未知类型';
+            }
             return entry.preview || entry.mime || (isEn ? 'Unknown Type' : '未知类型');
         }
-        if (isEn && entry.preview === '(空文本)') return '(Empty text)';
-        if (!isEn && entry.preview === '(Empty text)') return '(空文本)';
         return entry.preview || '';
     }
 
@@ -1049,6 +1048,7 @@ export default class RawClipboardExtension extends Extension {
             preview: previewInfo.title,
             subtitle: previewInfo.subtitle,
             icon: previewInfo.icon,
+            fileCountStr: previewInfo.fileCountStr || null,
             get time() { return entryTime; },
             set time(val) { if (typeof val === 'number') entryTime = val; },
         });
@@ -2266,7 +2266,7 @@ export default class RawClipboardExtension extends Extension {
 
         // 1. 带入搜索
         const searchBtn = createMenuItem('system-search-symbolic', isEn ? 'Search Preview' : '带入搜索', () => {
-            let preview = entry.preview || '';
+            let preview = this._getEntryPreview(entry);
             if (typeof Intl !== 'undefined' && Intl.Segmenter) {
                 const segs = Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(preview));
                 if (segs.length > MAX_SEARCH_IMPORT_LEN) preview = segs.slice(0, MAX_SEARCH_IMPORT_LEN).map(s => s.segment).join('');
