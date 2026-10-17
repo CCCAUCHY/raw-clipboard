@@ -256,6 +256,7 @@ const {
     packCompositeBytes,
     unpackCompositeBytes,
     detectCoreMime,
+    callAsync,
 } = extModule;
 
 // ============================================================================
@@ -1176,7 +1177,7 @@ await reporter.run('6.1 单文件与多文件折叠展示逻辑 (1个、2个、5
     ext.disable();
 });
 
-await reporter.run('6.2 剪切文件精准拦截与复制文件安全入库 (GNOME Nautilus cut 严禁入库)', async () => {
+await reporter.run('6.2 剪切文件精准拦截与复制文件安全入库 (GNOME Nautilus 与 KDE Dolphin 剪切严禁入库，正常复制安全放行)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -1192,11 +1193,46 @@ await reporter.run('6.2 剪切文件精准拦截与复制文件安全入库 (GNO
         new MockSelectionSource(['text/uri-list'], new TextEncoder().encode(uriCutText)));
     assert(getExtItemCount(ext) === 0, 'text/uri-list 剪切文件严禁进入历史队列');
 
-    // 3. 正常复制文件 (首行为 copy 或纯 uri-list) 应正常进入历史队列
+    // 3. KDE Dolphin 剪切文件 (application/x-kde-cutselection 标记为 1)
+    const kdeCutSrc = new MockSelectionSource(
+        ['application/x-kde-cutselection', 'text/uri-list'],
+        {
+            'application/x-kde-cutselection': new TextEncoder().encode('1'),
+            'text/uri-list': new TextEncoder().encode('file:///home/user/kde_moved.txt\n'),
+        }
+    );
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, kdeCutSrc);
+    assert(getExtItemCount(ext) === 0, 'KDE Dolphin 剪切文件 (marker 1) 严禁进入历史队列');
+
+    // 4. KDE Dolphin 正常复制文件 (application/x-kde-cutselection 标记为 0)
+    const kdeCopySrc = new MockSelectionSource(
+        ['application/x-kde-cutselection', 'text/uri-list'],
+        {
+            'application/x-kde-cutselection': new TextEncoder().encode('0'),
+            'text/uri-list': new TextEncoder().encode('file:///home/user/kde_copied.txt\n'),
+        }
+    );
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, kdeCopySrc);
+    assert(getExtItemCount(ext) === 1, 'KDE Dolphin 正常复制文件 (marker 0) 应正常进入历史队列');
+    assert(getExtItem(ext, 0).title === 'kde_copied.txt', '成功解析 KDE 复制文件名');
+
+    // 5. 候选 MIME 回退测试 (首选 x-special/gnome-copied-files 为空流时自动回退至 text/uri-list)
+    const fallbackSrc = new MockSelectionSource(
+        ['x-special/gnome-copied-files', 'text/uri-list'],
+        {
+            'x-special/gnome-copied-files': new Uint8Array(0),
+            'text/uri-list': new TextEncoder().encode('file:///home/user/fallback_file.txt\n'),
+        }
+    );
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, fallbackSrc);
+    assert(getExtItemCount(ext) === 2, '首选 MIME 返回空时自动回退至下一个候选 MIME 成功入库');
+    assert(getExtItem(ext, 0).title === 'fallback_file.txt', '回退成功解析出 fallback_file.txt');
+
+    // 6. 正常复制文件 (首行为 copy 或纯 uri-list) 应正常进入历史队列
     const copyText = '# GNOME Nautilus Drag\ncopy\nfile:///home/user/target_copied.txt\n';
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
         new MockSelectionSource(['x-special/gnome-copied-files'], new TextEncoder().encode(copyText)));
-    assert(getExtItemCount(ext) === 1, '正常复制文件应正常进入历史队列');
+    assert(getExtItemCount(ext) === 3, '正常复制文件应正常进入历史队列');
     const item = getExtItem(ext, 0);
     assert(item.title === 'target_copied.txt', `copy 与注释应被剥离，实际: ${item.title}`);
     assert(item.subtitle.includes('1 项'), `实际: ${item.subtitle}`);
@@ -4912,6 +4948,137 @@ await reporter.run('16.7 左侧 48x48 扁平化正方形类型按钮多格式回
     assert(restoredHtmlSource !== null, '点击 HTML 按钮成功写回剪贴板');
     assert(restoredHtmlSource.get_mimetypes()[0] === 'text/html', '回灌 MIME 必须为 text/html');
     assert(typeof restoredHtmlSource[RESTORE_NONCE] === 'string', '回灌源挂载防回环 RESTORE_NONCE');
+
+    ext.disable();
+});
+
+await reporter.run('16.8 复合类型容错与优雅降级测试 (HTML 读空或异常时自动降级为单文本条目，杜绝整条丢弃)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 网页或办公软件声明 text/html + text/plain，但 HTML 读空 (0 字节)
+    const sourceHtmlEmpty = new MockSelectionSource(
+        ['text/html', 'text/plain'],
+        {
+            'text/html': new Uint8Array(0),
+            'text/plain': new TextEncoder().encode('Resilient Plain Text Content'),
+        }
+    );
+
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, sourceHtmlEmpty);
+
+    // 验证：绝对不丢弃整条数据，而是优雅降级为单文本条目
+    assert(getExtItemCount(ext) === 1, 'HTML 读取为空时优雅降级入库 1 条记录');
+    const entry = ext._getEntry(0);
+    assert(entry.type === 'text', `类型降级为 text，实际: ${entry.type}`);
+    assert(entry.preview === 'Resilient Plain Text Content', `预览内容保留纯文本，实际: ${entry.preview}`);
+    assert(entry.formats.length === 1, '单类型条目仅含 1 个格式');
+    assert(entry.formats[0].type === 'text', '格式为 text');
+
+    ext.disable();
+});
+
+await reporter.run('16.9 复合类型容错与优雅降级测试 (纯文本部件读空时自动降级为单 HTML 条目，隐藏文本按钮)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 源声明 text/html + text/plain，但 plain 读空 (0 字节)
+    const sourceTextEmpty = new MockSelectionSource(
+        ['text/html', 'text/plain'],
+        {
+            'text/html': new TextEncoder().encode('<p>HTML Only Content</p>'),
+            'text/plain': new Uint8Array(0),
+        }
+    );
+
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, sourceTextEmpty);
+
+    // 验证：优雅降级为单 HTML 条目
+    assert(getExtItemCount(ext) === 1, '纯文本读取为空时优雅降级入库 1 条记录');
+    const entry = ext._getEntry(0);
+    assert(entry.type === 'html', `类型降级为 html，实际: ${entry.type}`);
+    assert(entry.formats.length === 1, '仅含 HTML 格式');
+    assert(entry.formats[0].type === 'html', '格式类型为 html');
+
+    // 打开弹窗验证 UI 槽位：只有 HTML 按钮显示，纯文本按钮必须隐藏 (杜绝空按钮回灌 0 字节)
+    ext._openPopup();
+    const slot0 = ext._itemSlots[0];
+    assert(slot0.typeBtn0.visible === true, 'HTML 按钮正常可见');
+    assert(slot0.typeBtn1.visible === false, '纯文本按钮彻底隐藏');
+
+    ext.disable();
+});
+
+await reporter.run('16.10 复合类型纯文本回灌兜底与防 0 字节回灌测试 (空 text 部件 fallback 剥离 HTML 标签，严禁向系统剪贴板注入 0 字节)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 构造一个由异常历史恢复的复合条目，其 textBytes 大小为 0
+    const mockComposite = Object.freeze({
+        id: 'mock_comp_1',
+        type: 'composite',
+        mime: 'composite',
+        size: 100,
+        formats: [{ mime: 'text/html', type: 'html' }, { mime: 'text/plain', type: 'text' }],
+        bytes: new GLib.Bytes(new Uint8Array(0)),
+        htmlBytes: new GLib.Bytes(new TextEncoder().encode('<div><b>Fallback Message</b></div>')),
+        textBytes: new GLib.Bytes(new Uint8Array(0)),
+    });
+
+    globalThis._lastOwnedSource = null;
+    // 请求以纯文本形式回灌
+    ext._restoreEntryFormat(mockComposite, 'text/plain');
+
+    const restored = globalThis._lastOwnedSource;
+    assert(restored !== null, '触发 fallback 从 HTML 标签剥离文本并成功回灌');
+    assert(restored.get_mimetypes()[0] === 'text/plain', '回灌 MIME 为 text/plain');
+    assert(typeof restored[RESTORE_NONCE] === 'string', '挂载防回环 RESTORE_NONCE');
+
+    const inStream = await callAsync(restored, 'read_async', 'read_finish', 'text/plain', null);
+    const chunk = await callAsync(inStream, 'read_bytes_async', 'read_bytes_finish', 1024, GLib.PRIORITY_DEFAULT, null);
+    assert(chunk.get_size() > 0, '回灌字节数大于 0，绝非 0 字节');
+    const text = new TextDecoder().decode(chunk.get_data ? chunk.get_data() : chunk.toArray());
+    assert(text.includes('Fallback Message'), `成功剥离标签获得文本内容，实际: ${text}`);
+
+    // 测试当 contentBytes 彻底为空且无法 fallback 时，坚决不向系统剪贴板注入 0 字节
+    const zeroItem = Object.freeze({
+        id: 'zero_item',
+        type: 'raw',
+        mime: 'application/octet-stream',
+        size: 0,
+        bytes: new GLib.Bytes(new Uint8Array(0)),
+    });
+    globalThis._lastOwnedSource = null;
+    ext._restoreEntryFormat(zeroItem);
+    assert(globalThis._lastOwnedSource === null, '0 字节内容严禁注入系统剪贴板');
+
+    ext.disable();
+});
+
+await reporter.run('16.11 参数化 MIME 归一化捕获与跨应用去重测试 (text/plain;charset=UTF-8 与 UTF8_STRING 归一化查重)', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 1. 从应用 A (如浏览器) 复制纯文本，声明带参数的 MIME: text/plain;charset=UTF-8
+    const textA = 'Cross-App Deduplication String';
+    const srcA = new MockSelectionSource(
+        ['text/plain;charset=UTF-8', 'text/plain'],
+        new TextEncoder().encode(textA)
+    );
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcA);
+    assert(getExtItemCount(ext) === 1, '应用 A 纯文本入库成功');
+    assert(ext._getEntry(0).type === 'text', '条目类型为 text');
+
+    // 2. 从应用 B (如终端) 复制完全相同的内容，声明不同的 MIME 别名: UTF8_STRING
+    const srcB = new MockSelectionSource(
+        ['UTF8_STRING', 'STRING'],
+        new TextEncoder().encode(textA)
+    );
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, srcB);
+
+    // 验证：由于 MIME 归一化与 RadixRawTree 共享 text/plain 树根，精准命中查重去重！
+    assert(getExtItemCount(ext) === 1, '相同文本跨应用复制 100% 命中去重，条目数保持 1');
+    assert(ext._getEntry(0).preview === textA, '条目内容正确');
 
     ext.disable();
 });

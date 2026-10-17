@@ -770,7 +770,7 @@ await reporter.run('5.1 单文件与多文件折叠展示逻辑 (1个、2个、5
     ext.disable();
 });
 
-await reporter.run('5.2 剪切文件精准拦截与复制文件安全入库 (GNOME Nautilus cut 严禁入库)', async () => {
+await reporter.run('5.2 剪切文件精准拦截与复制文件安全入库 (GNOME Nautilus 与 KDE Dolphin 剪切严禁入库，正常复制安全放行)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -786,11 +786,46 @@ await reporter.run('5.2 剪切文件精准拦截与复制文件安全入库 (GNO
         new MockSelectionSource(['text/uri-list'], new TextEncoder().encode(uriCutText)));
     assert(getExtItemCount(ext) === 0, 'text/uri-list 剪切文件严禁进入历史队列');
 
-    // 3. 正常复制文件 (首行为 copy 或纯 uri-list) 应正常进入历史队列
+    // 3. KDE Dolphin 剪切文件 (application/x-kde-cutselection 标记为 1)
+    const kdeCutSrc = new MockSelectionSource(
+        ['application/x-kde-cutselection', 'text/uri-list'],
+        {
+            'application/x-kde-cutselection': new TextEncoder().encode('1'),
+            'text/uri-list': new TextEncoder().encode('file:///home/user/kde_moved.txt\n'),
+        }
+    );
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, kdeCutSrc);
+    assert(getExtItemCount(ext) === 0, 'KDE Dolphin 剪切文件 (marker 1) 严禁进入历史队列');
+
+    // 4. KDE Dolphin 正常复制文件 (application/x-kde-cutselection 标记为 0)
+    const kdeCopySrc = new MockSelectionSource(
+        ['application/x-kde-cutselection', 'text/uri-list'],
+        {
+            'application/x-kde-cutselection': new TextEncoder().encode('0'),
+            'text/uri-list': new TextEncoder().encode('file:///home/user/kde_copied.txt\n'),
+        }
+    );
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, kdeCopySrc);
+    assert(getExtItemCount(ext) === 1, 'KDE Dolphin 正常复制文件 (marker 0) 应正常进入历史队列');
+    assert(getExtItem(ext, 0).title === 'kde_copied.txt', '成功解析 KDE 复制文件名');
+
+    // 5. 候选 MIME 回退测试 (首选 x-special/gnome-copied-files 为空流时自动回退至 text/uri-list)
+    const fallbackSrc = new MockSelectionSource(
+        ['x-special/gnome-copied-files', 'text/uri-list'],
+        {
+            'x-special/gnome-copied-files': new Uint8Array(0),
+            'text/uri-list': new TextEncoder().encode('file:///home/user/fallback_file.txt\n'),
+        }
+    );
+    await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD, fallbackSrc);
+    assert(getExtItemCount(ext) === 2, '首选 MIME 返回空时自动回退至下一个候选 MIME 成功入库');
+    assert(getExtItem(ext, 0).title === 'fallback_file.txt', '回退成功解析出 fallback_file.txt');
+
+    // 6. 正常复制文件 (首行为 copy 或纯 uri-list) 应正常进入历史队列
     const copyText = '# GNOME Nautilus Drag\ncopy\nfile:///home/user/target_copied.txt\n';
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
         new MockSelectionSource(['x-special/gnome-copied-files'], new TextEncoder().encode(copyText)));
-    assert(getExtItemCount(ext) === 1, '正常复制文件应正常进入历史队列');
+    assert(getExtItemCount(ext) === 3, '正常复制文件应正常进入历史队列');
     const item = getExtItem(ext, 0);
     assert(item.title === 'target_copied.txt', `copy 与注释应被剥离，实际: ${item.title}`);
     assert(item.subtitle.includes('1 项'), `实际: ${item.subtitle}`);

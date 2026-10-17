@@ -5,39 +5,104 @@ const Utf8Decoder = new TextDecoder();
 
 // 核心 MIME 检测逻辑 (与 extension.js 保持同步)
 // 纯内存暂存：不屏蔽密码等类型，保留原始字节流
+function normalizeBaseMime(mime) {
+    if (!mime || typeof mime !== 'string') return '';
+    return mime.trim().toLowerCase().split(';')[0].trim();
+}
+
 function detectCoreMime(mimeTypes) {
     if (!mimeTypes || mimeTypes.length === 0) return null;
 
-    // 1. 位图图片类（仅常见位图支持缩略图预览：PNG, JPEG, WebP, BMP, GIF；SVG 等矢量格式作为未知类型仅保留原始数据）
-    const imgMime = ['image/png', 'image/jpeg', 'image/webp', 'image/bmp', 'image/gif'].find(m => mimeTypes.includes(m));
-    if (imgMime) return { mime: imgMime, type: 'image' };
+    const entries = [];
+    for (const raw of mimeTypes) {
+        if (!raw || typeof raw !== 'string') continue;
+        const base = normalizeBaseMime(raw);
+        if (base) entries.push({ raw, base });
+    }
+    if (entries.length === 0) return null;
 
-    // 2. 复制文件列表 (Nautilus 等 GNOME 原生文件管理器)
-    // 优先读取 x-special/gnome-copied-files 以便精准识别 copy 或 cut（剪切）动作标记
-    const fileMime = ['x-special/gnome-copied-files', 'text/uri-list'].find(m => mimeTypes.includes(m));
-    if (fileMime) return { mime: fileMime, type: 'files' };
+    const findRawCandidates = (baseList) => {
+        const result = [];
+        for (const targetBase of baseList) {
+            for (const item of entries) {
+                if (item.base === targetBase && !result.includes(item.raw)) {
+                    result.push(item.raw);
+                }
+            }
+        }
+        return result;
+    };
 
-    // 3. 复合类型 (多 MIME：如网页复制同时提供 text/html 和 text/plain 两种表示，保留富文本与纯文本双格式)
-    const hasHtml = mimeTypes.includes('text/html');
-    const textMime = ['text/plain;charset=utf-8', 'text/plain', 'UTF8_STRING', 'STRING'].find(m => mimeTypes.includes(m));
-    if (hasHtml && textMime) {
+    // 1. 位图图片类
+    const imgCandidates = findRawCandidates(['image/png', 'image/jpeg', 'image/webp', 'image/bmp', 'image/gif']);
+    if (imgCandidates.length > 0) {
         return {
-            type: 'composite',
-            mime: 'composite',
-            htmlMime: 'text/html',
-            textMime: textMime,
+            type: 'image',
+            mime: imgCandidates[0],
+            candidates: imgCandidates,
         };
     }
 
-    // 4. 纯文本（包括用户与密码管理器复制的密码字符串、Token 等）
-    if (textMime) return { mime: 'text/plain', sourceMime: textMime, type: 'text' };
+    // 2. 复制文件列表 (GNOME 与 KDE Dolphin 白名单)
+    const fileCandidates = findRawCandidates(['x-special/gnome-copied-files', 'text/uri-list']);
+    const kdeCutItem = entries.find(item => item.base === 'application/x-kde-cutselection' || item.base === 'x-kde-cutselection');
+    if (fileCandidates.length > 0 || kdeCutItem) {
+        const candidates = fileCandidates.length > 0 ? fileCandidates : ['text/uri-list'];
+        return {
+            type: 'files',
+            mime: candidates[0],
+            candidates: candidates,
+            kdeCutMime: kdeCutItem ? kdeCutItem.raw : null,
+        };
+    }
 
-    // 5. 富文本 HTML
-    if (hasHtml) return { mime: 'text/html', type: 'html' };
+    // 3. 复合类型与文本/HTML
+    const htmlCandidates = findRawCandidates(['text/html']);
+    const textCandidates = findRawCandidates(['text/plain', 'utf8_string', 'string', 'text']);
 
-    // 6. 兜底其它任意合法的 Raw 二进制类型（包含 SVG 等矢量格式，仅保留纯数据，不主动解析预览）
-    const valid = mimeTypes.filter(m => !m.startsWith('TARGETS') && !m.startsWith('TIMESTAMP') && !m.startsWith('MULTIPLE'));
-    if (valid.length > 0) return { mime: valid[0], type: 'raw' };
+    if (htmlCandidates.length > 0 && textCandidates.length > 0) {
+        return {
+            type: 'composite',
+            mime: 'composite',
+            htmlMime: htmlCandidates[0],
+            textMime: textCandidates[0],
+            htmlCandidates,
+            textCandidates,
+        };
+    }
+
+    if (textCandidates.length > 0) {
+        return {
+            type: 'text',
+            mime: 'text/plain',
+            sourceMime: textCandidates[0],
+            candidates: textCandidates,
+        };
+    }
+
+    if (htmlCandidates.length > 0) {
+        return {
+            type: 'html',
+            mime: 'text/html',
+            candidates: htmlCandidates,
+        };
+    }
+
+    // 4. 未知/原始二进制类型兜底
+    const valid = entries
+        .map(e => e.raw)
+        .filter(m => {
+            const b = normalizeBaseMime(m);
+            return !b.startsWith('targets') && !b.startsWith('timestamp') && !b.startsWith('multiple') && !b.startsWith('delete');
+        });
+
+    if (valid.length > 0) {
+        return {
+            type: 'raw',
+            mime: valid[0],
+            candidates: valid,
+        };
+    }
 
     return null;
 }
@@ -79,6 +144,13 @@ async function runTests() {
         { mimes: ['application/x-keepassxc-hint', 'text/plain'], expected: 'text' },
         { mimes: ['application/x-1password-hint', 'text/plain'], expected: 'text' },
         { mimes: ['application/x-bitwarden-hint', 'text/plain'], expected: 'text' },
+        // 参数化 MIME 与大小写归一化测试
+        { mimes: ['text/plain;charset=utf-8'], expected: 'text' },
+        { mimes: ['TEXT/PLAIN; CHARSET=UTF-8'], expected: 'text' },
+        { mimes: ['text/html;charset=utf-8', 'text/plain;charset=UTF-8'], expected: 'composite' },
+        { mimes: ['text/uri-list;charset=utf-8'], expected: 'files' },
+        { mimes: ['IMAGE/PNG'], expected: 'image' },
+        { mimes: ['application/x-kde-cutselection', 'text/uri-list'], expected: 'files' },
     ];
 
     for (const tc of testCases) {

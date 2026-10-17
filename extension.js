@@ -128,12 +128,24 @@ export function findLongestCommonPrefix(a, b, offA = 0, offB = 0) {
     return i;
 }
 
+export function normalizeBaseMime(mime) {
+    if (!mime || typeof mime !== 'string') return '';
+    return mime.trim().toLowerCase().split(';')[0].trim();
+}
+
 export function normalizeMime(mime) {
     if (!mime) return 'default';
-    if (mime.startsWith('text/plain') || mime === 'UTF8_STRING' || mime === 'STRING') {
+    const base = normalizeBaseMime(mime);
+    if (base === 'text/plain' || base === 'utf8_string' || base === 'string' || base === 'text') {
         return 'text/plain';
     }
-    return mime;
+    if (base === 'text/html') {
+        return 'text/html';
+    }
+    if (base === 'text/uri-list' || base === 'x-special/gnome-copied-files') {
+        return base;
+    }
+    return base || mime;
 }
 
 export function makeSliceBytes(sourceBytes, uData, offset, len) {
@@ -376,22 +388,98 @@ export class RadixRawTree {
 
 export function detectCoreMime(mimeTypes) {
     if (!mimeTypes || mimeTypes.length === 0) return null;
-    const imgMime = ['image/png', 'image/jpeg', 'image/webp', 'image/bmp', 'image/gif'].find(m => mimeTypes.includes(m));
-    if (imgMime) return { mime: imgMime, type: 'image' };
 
-    const fileMime = ['x-special/gnome-copied-files', 'text/uri-list'].find(m => mimeTypes.includes(m));
-    if (fileMime) return { mime: fileMime, type: 'files' };
-
-    const hasHtml = mimeTypes.includes('text/html');
-    const textMime = ['text/plain;charset=utf-8', 'text/plain', 'UTF8_STRING', 'STRING'].find(m => mimeTypes.includes(m));
-    if (hasHtml && textMime) {
-        return { type: 'composite', mime: 'composite', htmlMime: 'text/html', textMime };
+    const entries = [];
+    for (const raw of mimeTypes) {
+        if (!raw || typeof raw !== 'string') continue;
+        const base = normalizeBaseMime(raw);
+        if (base) entries.push({ raw, base });
     }
-    if (textMime) return { mime: 'text/plain', sourceMime: textMime, type: 'text' };
-    if (hasHtml) return { mime: 'text/html', type: 'html' };
+    if (entries.length === 0) return null;
 
-    const valid = mimeTypes.filter(m => !m.startsWith('TARGETS') && !m.startsWith('TIMESTAMP') && !m.startsWith('MULTIPLE'));
-    if (valid.length > 0) return { mime: valid[0], type: 'raw' };
+    const findRawCandidates = (baseList) => {
+        const result = [];
+        for (const targetBase of baseList) {
+            for (const item of entries) {
+                if (item.base === targetBase && !result.includes(item.raw)) {
+                    result.push(item.raw);
+                }
+            }
+        }
+        return result;
+    };
+
+    // 1. 位图图片类
+    const imgCandidates = findRawCandidates(['image/png', 'image/jpeg', 'image/webp', 'image/bmp', 'image/gif']);
+    if (imgCandidates.length > 0) {
+        return {
+            type: 'image',
+            mime: imgCandidates[0],
+            candidates: imgCandidates,
+        };
+    }
+
+    // 2. 复制文件列表 (GNOME 与 KDE Dolphin 白名单)
+    const fileCandidates = findRawCandidates(['x-special/gnome-copied-files', 'text/uri-list']);
+    const kdeCutItem = entries.find(item => item.base === 'application/x-kde-cutselection' || item.base === 'x-kde-cutselection');
+    if (fileCandidates.length > 0 || kdeCutItem) {
+        const candidates = fileCandidates.length > 0 ? fileCandidates : ['text/uri-list'];
+        return {
+            type: 'files',
+            mime: candidates[0],
+            candidates: candidates,
+            kdeCutMime: kdeCutItem ? kdeCutItem.raw : null,
+        };
+    }
+
+    // 3. 复合类型与文本/HTML
+    const htmlCandidates = findRawCandidates(['text/html']);
+    const textCandidates = findRawCandidates(['text/plain', 'utf8_string', 'string', 'text']);
+
+    if (htmlCandidates.length > 0 && textCandidates.length > 0) {
+        return {
+            type: 'composite',
+            mime: 'composite',
+            htmlMime: htmlCandidates[0],
+            textMime: textCandidates[0],
+            htmlCandidates,
+            textCandidates,
+        };
+    }
+
+    if (textCandidates.length > 0) {
+        return {
+            type: 'text',
+            mime: 'text/plain',
+            sourceMime: textCandidates[0],
+            candidates: textCandidates,
+        };
+    }
+
+    if (htmlCandidates.length > 0) {
+        return {
+            type: 'html',
+            mime: 'text/html',
+            candidates: htmlCandidates,
+        };
+    }
+
+    // 4. 未知/原始二进制类型兜底
+    const valid = entries
+        .map(e => e.raw)
+        .filter(m => {
+            const b = normalizeBaseMime(m);
+            return !b.startsWith('targets') && !b.startsWith('timestamp') && !b.startsWith('multiple') && !b.startsWith('delete');
+        });
+
+    if (valid.length > 0) {
+        return {
+            type: 'raw',
+            mime: valid[0],
+            candidates: valid,
+        };
+    }
+
     return null;
 }
 
@@ -493,7 +581,9 @@ export function extractCompositePart(gBytes, targetMime) {
         const dataLen = dv.getUint32(offset, false);
         offset += 4;
         if (offset + dataLen > uData.length) break;
-        const isMatch = (typeof targetMime === 'function') ? targetMime(mime) : (mime === targetMime || mime.startsWith(targetMime));
+        const isMatch = (typeof targetMime === 'function')
+            ? targetMime(mime)
+            : (normalizeBaseMime(mime) === normalizeBaseMime(targetMime) || mime === targetMime || mime.startsWith(targetMime));
         if (isMatch) return makeSliceBytes(gBytes, uData, offset, dataLen);
         offset += dataLen;
     }
@@ -512,11 +602,11 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
     if (type === 'composite') {
         let clean = extra?.textBytes ? extractTextPreview(extra.textBytes, false) : '';
         if (!clean) {
-            const textPart = extractCompositePart(gBytes, m => m.startsWith('text/plain') || m.includes('STRING'));
+            const textPart = extractCompositePart(gBytes, m => ['text/plain', 'utf8_string', 'string', 'text'].includes(normalizeBaseMime(m)));
             if (textPart) clean = extractTextPreview(textPart, false);
         }
         if (!clean) {
-            const htmlPart = extra?.htmlBytes || extractCompositePart(gBytes, m => m.startsWith('text/html') || m.includes('html'));
+            const htmlPart = extra?.htmlBytes || extractCompositePart(gBytes, m => normalizeBaseMime(m) === 'text/html');
             if (htmlPart) clean = extractTextPreview(htmlPart, true);
         }
         return {
@@ -1021,13 +1111,13 @@ export default class RawClipboardExtension extends Extension {
             },
             get htmlBytes() {
                 if (core.type === 'composite') {
-                    return extractCompositePart(this.bytes, m => m.startsWith('text/html') || m.includes('html'));
+                    return extractCompositePart(this.bytes, m => normalizeBaseMime(m) === 'text/html');
                 }
                 return null;
             },
             get textBytes() {
                 if (core.type === 'composite') {
-                    return extractCompositePart(this.bytes, m => m.startsWith('text/plain') || m.includes('STRING'));
+                    return extractCompositePart(this.bytes, m => ['text/plain', 'utf8_string', 'string', 'text'].includes(normalizeBaseMime(m)));
                 }
                 return null;
             },
@@ -1258,40 +1348,106 @@ export default class RawClipboardExtension extends Extension {
         });
     }
 
-    async _readMimeStream(selectionSource, mime, readCancellable, resetWatchdog, maxPayloadBytes, currentTotalRead = 0) {
-        let inputStream = null;
-        let outputStream = null;
-        let isOversized = false;
-        try {
-            inputStream = await callAsync(selectionSource, 'read_async', 'read_finish', mime, readCancellable);
-            resetWatchdog();
-            outputStream = Gio.MemoryOutputStream.new_resizable();
-            const CHUNK_SIZE = 64 * 1024;
-            let totalRead = currentTotalRead;
+    async _readCandidateStream(selectionSource, candidates, readCancellable, inactivityTimeoutMs, maxPayloadBytes, currentTotalRead = 0) {
+        if (!candidates || candidates.length === 0) return null;
 
-            while (true) {
-                if (readCancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) break;
-                const bytes = await callAsync(inputStream, 'read_bytes_async', 'read_bytes_finish', CHUNK_SIZE, GLib.PRIORITY_DEFAULT, readCancellable);
-                const chunkSize = bytes.get_size();
-                if (chunkSize === 0) break;
-
-                totalRead += chunkSize;
-                if (totalRead > maxPayloadBytes) {
-                    isOversized = true;
-                    readCancellable.cancel();
-                    break;
-                }
-                outputStream.write_bytes(bytes, null);
-                resetWatchdog();
+        for (const mime of candidates) {
+            if (readCancellable.is_cancelled() || !this._cancellable || this._cancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) {
+                return null;
             }
 
-            if (isOversized) return { isOversized: true, bytes: null };
-            outputStream.close(null);
-            return { isOversized: false, bytes: outputStream.steal_as_bytes() };
-        } finally {
-            if (inputStream) { try { inputStream.close(null); } catch {} }
-            if (outputStream && !outputStream.is_closed()) { try { outputStream.close(null); } catch {} }
+            const candidateCancellable = new Gio.Cancellable();
+            const linkId = readCancellable.connect(() => candidateCancellable.cancel());
+            let watchdogId = 0;
+
+            const resetWatchdog = () => {
+                if (watchdogId > 0) {
+                    this._removeTimeout(watchdogId);
+                    watchdogId = 0;
+                }
+                if (candidateCancellable.is_cancelled()) return;
+                watchdogId = this._addTimeout(inactivityTimeoutMs, () => {
+                    watchdogId = 0;
+                    candidateCancellable.cancel();
+                    return GLib.SOURCE_REMOVE;
+                });
+            };
+
+            let inputStream = null;
+            let outputStream = null;
+            let isOversized = false;
+
+            try {
+                resetWatchdog();
+                inputStream = await callAsync(selectionSource, 'read_async', 'read_finish', mime, candidateCancellable);
+                resetWatchdog();
+
+                outputStream = Gio.MemoryOutputStream.new_resizable();
+                const CHUNK_SIZE = 64 * 1024;
+                let totalRead = currentTotalRead;
+
+                while (true) {
+                    if (candidateCancellable.is_cancelled() || readCancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) break;
+                    const bytes = await callAsync(inputStream, 'read_bytes_async', 'read_bytes_finish', CHUNK_SIZE, GLib.PRIORITY_DEFAULT, candidateCancellable);
+                    const chunkSize = bytes ? bytes.get_size() : 0;
+                    if (chunkSize === 0) break;
+
+                    totalRead += chunkSize;
+                    if (totalRead > maxPayloadBytes) {
+                        isOversized = true;
+                        candidateCancellable.cancel();
+                        break;
+                    }
+                    outputStream.write_bytes(bytes, null);
+                    resetWatchdog();
+                }
+
+                if (isOversized) {
+                    return { isOversized: true, mime, bytes: null };
+                }
+
+                if (readCancellable.is_cancelled() || !this._cancellable || this._cancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) {
+                    return null;
+                }
+
+                if (outputStream && !outputStream.is_closed()) {
+                    outputStream.close(null);
+                    const resBytes = outputStream.steal_as_bytes();
+                    if (resBytes && resBytes.get_size() > 0) {
+                        return { isOversized: false, mime, bytes: resBytes, size: resBytes.get_size() };
+                    }
+                }
+            } catch (e) {
+                if (readCancellable.is_cancelled() || !this._cancellable || this._cancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) {
+                    return null;
+                }
+            } finally {
+                if (watchdogId > 0) {
+                    this._removeTimeout(watchdogId);
+                    watchdogId = 0;
+                }
+                if (linkId > 0) {
+                    readCancellable.disconnect(linkId);
+                }
+                if (inputStream) { try { inputStream.close(null); } catch {} }
+                if (outputStream && !outputStream.is_closed()) { try { outputStream.close(null); } catch {} }
+            }
         }
+
+        return null;
+    }
+
+    async _readMimeStream(selectionSource, mime, readCancellable, resetWatchdog, maxPayloadBytes, currentTotalRead = 0) {
+        let inactivityTimeoutMs = this._inactivityTimeoutMs !== undefined ? this._inactivityTimeoutMs : INACTIVITY_TIMEOUT_MS;
+        if (this._settings) {
+            try {
+                const sec = this._settings.get_int('inactivity-timeout-sec');
+                if (sec > 0 && this._inactivityTimeoutMs === undefined) inactivityTimeoutMs = sec * 1000;
+            } catch {}
+        }
+        const res = await this._readCandidateStream(selectionSource, [mime], readCancellable, inactivityTimeoutMs, maxPayloadBytes, currentTotalRead);
+        if (res && res.isOversized) return { isOversized: true, bytes: null };
+        return { isOversized: false, bytes: res?.bytes || null };
     }
 
     async _onClipboardOwnerChanged(_selection, selectionType, selectionSource) {
@@ -1320,7 +1476,7 @@ export default class RawClipboardExtension extends Extension {
         const boundSettings = this._settings;
         const boundCancellable = this._cancellable;
 
-        let parentCancelId = 0, watchdogId = 0, overallTimeoutId = 0, overallSettingsChangedId = 0;
+        let parentCancelId = 0, overallTimeoutId = 0, overallSettingsChangedId = 0;
         const overallStartTime = Date.now();
 
         try {
@@ -1340,25 +1496,7 @@ export default class RawClipboardExtension extends Extension {
                 } catch {}
             }
 
-            // 守卫 1: 0 字节停滞超时看门狗
-            const resetWatchdog = () => {
-                if (watchdogId > 0) { this._removeTimeout(watchdogId); watchdogId = 0; }
-                if (this._inactivityTimeoutMs !== undefined) inactivityTimeoutMs = this._inactivityTimeoutMs;
-                else if (boundSettings) {
-                    try {
-                        const sec = boundSettings.get_int('inactivity-timeout-sec');
-                        if (sec > 0) inactivityTimeoutMs = sec * 1000;
-                    } catch {}
-                }
-                watchdogId = this._addTimeout(inactivityTimeoutMs, () => {
-                    watchdogId = 0;
-                    readCancellable.cancel();
-                    return GLib.SOURCE_REMOVE;
-                });
-            };
-            resetWatchdog();
-
-            // 守卫 2: 总体硬超时
+            // 总体硬超时守卫
             const scheduleOverallTimeout = (timeoutMs) => {
                 if (overallTimeoutId > 0) { this._removeTimeout(overallTimeoutId); overallTimeoutId = 0; }
                 const elapsedMs = Date.now() - overallStartTime;
@@ -1394,37 +1532,95 @@ export default class RawClipboardExtension extends Extension {
 
             let gBytes = null, size = 0, compositeParts = null;
 
-            if (core.type === 'composite') {
-                const htmlRes = await this._readMimeStream(selectionSource, core.htmlMime, readCancellable, resetWatchdog, maxPayloadBytes, 0);
-                if (htmlRes.isOversized || !htmlRes.bytes || htmlRes.bytes.get_size() === 0) return;
+            // KDE 剪切文件精准拦截 (标记 1 为剪切，0 为普通复制)
+            if (core.type === 'files' && core.kdeCutMime) {
+                const kdeRes = await this._readCandidateStream(selectionSource, [core.kdeCutMime], readCancellable, inactivityTimeoutMs, 1024, 0);
+                if (kdeRes && kdeRes.bytes && kdeRes.bytes.get_size() > 0) {
+                    const kdeData = kdeRes.bytes.get_data ? kdeRes.bytes.get_data() : (kdeRes.bytes.toArray ? kdeRes.bytes.toArray() : kdeRes.bytes);
+                    const kdeStr = Utf8Decoder.decode(kdeData).trim();
+                    if (kdeStr === '1' || kdeStr.startsWith('1')) {
+                        this._log?.('[RawClipboard] 成功拦截 KDE 剪切文件操作 (application/x-kde-cutselection = 1)');
+                        return;
+                    }
+                }
+            }
 
-                const textRes = await this._readMimeStream(selectionSource, core.textMime, readCancellable, resetWatchdog, maxPayloadBytes, htmlRes.bytes.get_size());
-                if (textRes.isOversized) return;
-                const textBytes = textRes.bytes || new GLib.Bytes(new Uint8Array(0));
+            if (core.type === 'composite') {
+                // 先读纯文本候选流（体积小、速度快、稳定性高）
+                const textRes = await this._readCandidateStream(
+                    selectionSource,
+                    core.textCandidates || [core.textMime],
+                    readCancellable,
+                    inactivityTimeoutMs,
+                    maxPayloadBytes,
+                    0
+                );
+                const textBytes = (textRes && !textRes.isOversized && textRes.bytes && textRes.bytes.get_size() > 0)
+                    ? textRes.bytes
+                    : null;
+
+                // 再读 HTML 候选流（累积已读取的文本大小统计上限）
+                const htmlAccumulated = textBytes ? textBytes.get_size() : 0;
+                const htmlRes = await this._readCandidateStream(
+                    selectionSource,
+                    core.htmlCandidates || [core.htmlMime],
+                    readCancellable,
+                    inactivityTimeoutMs,
+                    maxPayloadBytes,
+                    htmlAccumulated
+                );
+                const htmlBytes = (htmlRes && !htmlRes.isOversized && htmlRes.bytes && htmlRes.bytes.get_size() > 0)
+                    ? htmlRes.bytes
+                    : null;
 
                 if (readCancellable.is_cancelled() || !this._cancellable || this._cancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) {
                     return;
                 }
 
-                compositeParts = [
-                    { mime: core.htmlMime, bytes: htmlRes.bytes },
-                    { mime: core.textMime, bytes: textBytes },
-                ];
-                gBytes = packCompositeBytes(compositeParts);
-                size = htmlRes.bytes.get_size() + textBytes.get_size();
+                // 优雅降级决策：双路均成功则封装复合条目；任一路失败/空则降级为单格式条目，杜绝整条丢弃
+                if (htmlBytes && textBytes) {
+                    compositeParts = [
+                        { mime: htmlRes.mime || core.htmlMime || 'text/html', bytes: htmlBytes },
+                        { mime: textRes.mime || core.textMime || 'text/plain', bytes: textBytes },
+                    ];
+                    gBytes = packCompositeBytes(compositeParts);
+                    size = htmlBytes.get_size() + textBytes.get_size();
+                } else if (htmlBytes && !textBytes) {
+                    core.type = 'html';
+                    core.mime = htmlRes.mime || 'text/html';
+                    gBytes = htmlBytes;
+                    size = htmlBytes.get_size();
+                } else if (!htmlBytes && textBytes) {
+                    core.type = 'text';
+                    core.mime = 'text/plain';
+                    core.sourceMime = textRes.mime || 'text/plain';
+                    gBytes = textBytes;
+                    size = textBytes.get_size();
+                } else {
+                    return;
+                }
             } else {
-                const readMime = core.sourceMime || core.mime;
-                const res = await this._readMimeStream(selectionSource, readMime, readCancellable, resetWatchdog, maxPayloadBytes, 0);
-                if (res.isOversized) return;
+                const candidates = core.candidates || [core.sourceMime || core.mime];
+                const res = await this._readCandidateStream(
+                    selectionSource,
+                    candidates,
+                    readCancellable,
+                    inactivityTimeoutMs,
+                    maxPayloadBytes,
+                    0
+                );
+                if (!res || res.isOversized || !res.bytes || res.bytes.get_size() === 0) return;
                 if (readCancellable.is_cancelled() || !this._cancellable || this._cancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) {
                     return;
                 }
                 gBytes = res.bytes;
-                if (!gBytes || gBytes.get_size() === 0) return;
                 size = gBytes.get_size();
+                if (res.mime && core.type !== 'text') {
+                    core.mime = res.mime;
+                }
             }
 
-            // 严格拦截剪切文件操作
+            // 严格拦截剪切文件操作 (GNOME Nautilus cut 标记)
             if (core.type === 'files' && isFileCutOperation(gBytes)) return;
 
             if (!this._cancellable || this._cancellable.is_cancelled() || readCancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) {
@@ -1476,7 +1672,6 @@ export default class RawClipboardExtension extends Extension {
             if (overallSettingsChangedId > 0 && boundSettings) {
                 try { boundSettings.disconnect(overallSettingsChangedId); } catch {}
             }
-            if (watchdogId > 0) this._removeTimeout(watchdogId);
             if (overallTimeoutId > 0) this._removeTimeout(overallTimeoutId);
             if (parentCancelId > 0 && boundCancellable) {
                 try { boundCancellable.disconnect(parentCancelId); } catch {}
@@ -1575,16 +1770,33 @@ export default class RawClipboardExtension extends Extension {
             try {
                 let source = null, mime = selectedMime, contentBytes = null;
                 if (entry.type === 'composite') {
-                    if (mime === 'text/html' || mime.includes('html')) {
+                    const baseSelected = normalizeBaseMime(mime);
+                    if (baseSelected === 'text/html' || baseSelected.includes('html')) {
                         mime = 'text/html';
                         contentBytes = entry.htmlBytes || entry.bytes;
-                    } else if (mime.startsWith('text/plain') || mime.includes('STRING')) {
-                        contentBytes = entry.textBytes || entry.bytes;
+                    } else if (baseSelected === 'text/plain' || ['text/plain', 'utf8_string', 'string', 'text'].includes(baseSelected)) {
+                        mime = 'text/plain';
+                        contentBytes = entry.textBytes;
+                        if (!contentBytes || contentBytes.get_size() === 0) {
+                            const htmlBytes = entry.htmlBytes || entry.bytes;
+                            if (htmlBytes && htmlBytes.get_size() > 0) {
+                                const plainText = extractTextPreview(htmlBytes, true);
+                                if (plainText && plainText.length > 0) {
+                                    contentBytes = new GLib.Bytes(new TextEncoder().encode(plainText));
+                                }
+                            }
+                        }
+                        if (!contentBytes) contentBytes = entry.bytes;
                     } else {
                         contentBytes = extractCompositePart(entry.bytes, mime) || entry.bytes;
                     }
                 } else {
                     contentBytes = entry.bytes;
+                }
+
+                if (!contentBytes || contentBytes.get_size() === 0) {
+                    this._log?.('[RawClipboard] Restore aborted: contentBytes is empty (0 bytes)');
+                    return;
                 }
 
                 if (Meta?.SelectionSourceMemory?.new) {
@@ -1628,7 +1840,21 @@ export default class RawClipboardExtension extends Extension {
 
     _convertEntry(entry, targetType) {
         if (!entry || targetType !== 'text') return;
-        const textBytes = (entry.type === 'composite') ? (entry.textBytes || entry.bytes) : entry.bytes;
+        let textBytes = null;
+        if (entry.type === 'composite') {
+            textBytes = entry.textBytes;
+            if (!textBytes || textBytes.get_size() === 0) {
+                const htmlBytes = entry.htmlBytes;
+                if (htmlBytes && htmlBytes.get_size() > 0) {
+                    const plain = extractTextPreview(htmlBytes, true);
+                    if (plain && plain.length > 0) {
+                        textBytes = new GLib.Bytes(new TextEncoder().encode(plain));
+                    }
+                }
+            }
+        } else {
+            textBytes = entry.bytes;
+        }
         if (!textBytes || textBytes.get_size() === 0) return;
 
         const mime = 'text/plain;charset=utf-8';
@@ -1658,7 +1884,7 @@ export default class RawClipboardExtension extends Extension {
         }
 
         const size = textBytes.get_size();
-        const core = { type: 'text', mime };
+        const core = { type: 'text', mime, sourceMime: mime };
         const insertResult = this.#radixTree.insert(mime, textBytes, leaf => {
             return this._buildEntry(leaf, core, textBytes, size, copyTime);
         });
