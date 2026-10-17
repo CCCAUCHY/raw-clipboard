@@ -15,10 +15,7 @@ extResource._register();
 
 const testDir = GLib.path_get_dirname(GLib.filename_from_uri(import.meta.url)[0]);
 const localGResource = GLib.build_filenamev([testDir, 'mock.gresource']);
-const tmpGResource = '/tmp/frosted-wallpaper/tests/mock.gresource';
-const mockResource = Gio.Resource.load(
-    GLib.file_test(localGResource, GLib.FileTest.EXISTS) ? localGResource : tmpGResource
-);
+const mockResource = Gio.Resource.load(localGResource);
 mockResource._register();
 
 // Clutter & St UI Mock 组件库 (用于在无桌面渲染环境脱壳测试 Extension UI 生命周期)

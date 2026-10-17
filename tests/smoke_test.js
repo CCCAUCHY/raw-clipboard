@@ -30,7 +30,7 @@ function detectCoreMime(mimeTypes) {
     }
 
     // 4. 纯文本（包括用户与密码管理器复制的密码字符串、Token 等）
-    if (textMime) return { mime: textMime, type: 'text' };
+    if (textMime) return { mime: 'text/plain', sourceMime: textMime, type: 'text' };
 
     // 5. 富文本 HTML
     if (hasHtml) return { mime: 'text/html', type: 'html' };

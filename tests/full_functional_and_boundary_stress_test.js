@@ -16,10 +16,7 @@ extResource._register();
 
 const testDir = GLib.path_get_dirname(GLib.filename_from_uri(import.meta.url)[0]);
 const localGResource = GLib.build_filenamev([testDir, 'mock.gresource']);
-const tmpGResource = '/tmp/frosted-wallpaper/tests/mock.gresource';
-const mockResource = Gio.Resource.load(
-    GLib.file_test(localGResource, GLib.FileTest.EXISTS) ? localGResource : tmpGResource
-);
+const mockResource = Gio.Resource.load(localGResource);
 mockResource._register();
 
 // Clutter & St UI Mock 组件库 (用于在无桌面渲染环境脱壳测试 Extension UI 生命周期)
@@ -3209,6 +3206,13 @@ await reporter.run('12.3 RadixRawTree 100% 重复插入直接命中已有条目 
     const r2 = tree.insert('text/plain', bDuplicate, () => ({ id: 'entry-dup' }));
     assert(r2.isDuplicate === true, '二次插入相同数据必须命中重复');
     assert(r2.existingEntry.id === 'entry-1', '返回的必须是已有条目实例');
+
+    // 跨 MIME 别名查重：以 text/plain;charset=utf-8、UTF8_STRING 插入相同文本，必须命中已有条目
+    const r3 = tree.insert('text/plain;charset=utf-8', bDuplicate, () => ({ id: 'entry-browser' }));
+    assert(r3.isDuplicate === true && r3.existingEntry.id === 'entry-1', '浏览器 text/plain;charset=utf-8 必须命中相同纯文本');
+
+    const r4 = tree.insert('UTF8_STRING', bDuplicate, () => ({ id: 'entry-term' }));
+    assert(r4.isDuplicate === true && r4.existingEntry.id === 'entry-1', '终端 UTF8_STRING 必须命中相同纯文本');
 });
 
 await reporter.run('12.4 RadixRawTree 短串作为长串前缀插入 (先长后短与先短后长自适应分裂)', async () => {
@@ -3745,19 +3749,19 @@ await reporter.run('12.13 消除重复物化缓存与物理前缀树缓冲预算
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
-    // 1. 创建两个各 30MB 的条目，共享 10MB 公共前缀
+    // 1. 创建两个各 35MB 的条目，共享 10MB 公共前缀
     const commonPrefix = new Uint8Array(10 * 1024 * 1024);
     commonPrefix.fill(65); // 'A'
-    const suffix1 = new Uint8Array(20 * 1024 * 1024);
+    const suffix1 = new Uint8Array(25 * 1024 * 1024);
     suffix1.fill(66); // 'B'
-    const suffix2 = new Uint8Array(20 * 1024 * 1024);
+    const suffix2 = new Uint8Array(25 * 1024 * 1024);
     suffix2.fill(67); // 'C'
 
-    const payload1 = new Uint8Array(30 * 1024 * 1024);
+    const payload1 = new Uint8Array(35 * 1024 * 1024);
     payload1.set(commonPrefix, 0);
     payload1.set(suffix1, commonPrefix.length);
 
-    const payload2 = new Uint8Array(30 * 1024 * 1024);
+    const payload2 = new Uint8Array(35 * 1024 * 1024);
     payload2.set(commonPrefix, 0);
     payload2.set(suffix2, commonPrefix.length);
 
@@ -3779,21 +3783,26 @@ await reporter.run('12.13 消除重复物化缓存与物理前缀树缓冲预算
         }
     }
 
-    // 3. 验证 getTotalBytes 真实反映前缀树物理分配大小 (10MB前缀 + 20MB后缀1 + 20MB后缀2 = 50MB)
+    // 3. 验证 getTotalBytes 真实反映前缀树物理分配大小 (10MB前缀 + 25MB后缀1 + 25MB后缀2 = 60MB)
     const treeBytes = tree.getTotalBytes();
-    assert(treeBytes === 50 * 1024 * 1024, `前缀树物理存储应为 50MB (共享前缀节省10MB)，实际: ${treeBytes / 1024 / 1024}MB`);
+    assert(treeBytes === 60 * 1024 * 1024, `前缀树物理存储应为 60MB (共享前缀节省10MB)，实际: ${treeBytes / 1024 / 1024}MB`);
 
     // 4. 执行条目回灌，验证访问 bytes 后不持久保留重复物化的 assembledBytes
     const entry2 = ext._getVisibleEntries()[0];
     const restoredBytes = entry2.bytes;
-    assert(restoredBytes.get_size() === 30 * 1024 * 1024, '回灌重构数据大小正确 (30MB)');
+    assert(restoredBytes.get_size() === 35 * 1024 * 1024, '回灌重构数据大小正确 (35MB)');
     // 验证 formats[0].bytes 动态派生自 entryRef.bytes，未捕获原始大 gBytes
     const fmtBytes = entry2.formats[0].bytes;
-    assert(fmtBytes.get_size() === 30 * 1024 * 1024, 'formats[0].bytes 动态委托返回一致');
+    assert(fmtBytes.get_size() === 35 * 1024 * 1024, 'formats[0].bytes 动态委托返回一致');
 
-    // 5. 验证容量限制：设置总上限为 50MB (低于两项逻辑总和 60MB)，必须淘汰最旧条目
+    // 5. 验证容量限制与前缀复用配额生效：
+    // 两项逻辑总和 70MB，但物理前缀树仅占 60MB。设置上限为 60MB 时，两项均应被保留（证明未按未压缩逻辑大小误淘汰）
+    ext._settings.set_int('max-total-size-mb', 60);
+    assert(ext._getVisibleEntries().length === 2, '前缀树复用生效：物理占用 60MB 满足 60MB 上限，两项均被保留');
+
+    // 随后将上限收紧至 50MB（低于实际物理占用 60MB），必须触发淘汰最旧条目
     ext._settings.set_int('max-total-size-mb', 50);
-    assert(ext._getVisibleEntries().length === 1, '总上限 50MB 触发淘汰，队列裁剪至 1 项');
+    assert(ext._getVisibleEntries().length === 1, '总上限 50MB 低于物理占用，触发淘汰裁剪至 1 项');
     assert(tree.getTotalBytes() <= 50 * 1024 * 1024, '存储树实际物理大小严格受控在总上限预算之内');
 
     ext.disable();
@@ -4606,6 +4615,12 @@ await reporter.run('16.1 网页/办公软件多 MIME 场景探测识别 (text/ht
 
     const singleText = detectCoreMime(['text/plain', 'UTF8_STRING']);
     assert(singleText.type === 'text' && singleText.mime === 'text/plain', '单一 text 不应误判为 composite');
+
+    const terminalText = detectCoreMime(['UTF8_STRING', 'STRING']);
+    assert(terminalText.type === 'text' && terminalText.mime === 'text/plain' && terminalText.sourceMime === 'UTF8_STRING', '终端 UTF8_STRING 归一化为 text/plain 并保留 sourceMime');
+
+    const browserText = detectCoreMime(['text/plain;charset=utf-8', 'text/plain']);
+    assert(browserText.type === 'text' && browserText.mime === 'text/plain' && browserText.sourceMime === 'text/plain;charset=utf-8', '浏览器 utf-8 plain 归一化为 text/plain 并保留 sourceMime');
 
     // 3. 优先级校验：若包含位图或文件，位图/文件依然保持更高优先级
     const imgWithHtml = detectCoreMime(['image/png', 'text/html', 'text/plain']);

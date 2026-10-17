@@ -128,26 +128,52 @@ export function findLongestCommonPrefix(a, b, offA = 0, offB = 0) {
     return i;
 }
 
+export function normalizeMime(mime) {
+    if (!mime) return 'default';
+    if (mime.startsWith('text/plain') || mime === 'UTF8_STRING' || mime === 'STRING') {
+        return 'text/plain';
+    }
+    return mime;
+}
+
 export function makeSliceBytes(sourceBytes, uData, offset, len) {
     if (offset === 0 && len === uData.length) return sourceBytes;
     return new GLib.Bytes(uData.slice(offset, offset + len));
 }
 
 export class RadixNode {
-    constructor(bytes = null, parent = null) {
+    #firstByte = undefined;
+
+    constructor(bytes = null, parent = null, firstByte = undefined) {
         this.bytes = bytes;
         this.parent = parent;
         this.children = new Map();
         this.entries = new Map();
         this.entry = null;
+        this.#firstByte = firstByte;
+    }
+
+    get firstByte() {
+        if (this.#firstByte !== undefined) return this.#firstByte;
+        if (!this.bytes || (typeof this.bytes.get_size === 'function' && this.bytes.get_size() === 0)) return null;
+        try {
+            const stream = Gio.MemoryInputStream.new_from_bytes(this.bytes);
+            const b1 = stream.read_bytes(1, null);
+            this.#firstByte = (b1 && b1.get_size() > 0) ? b1.get_data()[0] : null;
+        } catch {
+            const d = this.bytes.get_data ? this.bytes.get_data() : null;
+            this.#firstByte = d ? d[0] : null;
+        }
+        return this.#firstByte;
     }
 
     get data() {
         return this.bytes ? this.bytes.get_data() : null;
     }
 
-    setBytes(bytes) {
+    setBytes(bytes, firstByte = undefined) {
         this.bytes = bytes;
+        this.#firstByte = firstByte;
     }
 
     collectPathSegments() {
@@ -172,11 +198,12 @@ export class RadixRawTree {
 
     get root() { return this._root; }
     get rootCount() { return this._roots.size; }
-    hasRoot(mime) { return this._roots.has(mime); }
-    getRoot(mime) { return this._roots.has(mime) ? this._root : null; }
+    hasRoot(mime) { return this._roots.has(normalizeMime(mime)); }
+    getRoot(mime) { const k = normalizeMime(mime); return this._roots.has(k) ? this._root : null; }
     _getRoot(mime) {
-        if (!this._roots.has(mime)) {
-            this._roots.set(mime, this._root);
+        const k = normalizeMime(mime);
+        if (!this._roots.has(k)) {
+            this._roots.set(k, this._root);
         }
         return this._root;
     }
@@ -186,8 +213,9 @@ export class RadixRawTree {
     }
 
     insert(mime, gBytes, entryBuilder) {
-        if (mime) this._roots.set(mime, this._root);
-        const mimeKey = mime || 'default';
+        const normMime = normalizeMime(mime);
+        if (normMime) this._roots.set(normMime, this._root);
+        const mimeKey = normMime;
         const totalLen = gBytes.get_size();
         const uIncoming = gBytes.get_data();
         let currNode = this._root;
@@ -216,7 +244,7 @@ export class RadixRawTree {
             const firstByte = uIncoming[offset];
             if (!currNode.children.has(firstByte)) {
                 const leafBytes = makeSliceBytes(gBytes, uIncoming, offset, remainingLen);
-                const leaf = new RadixNode(leafBytes, currNode);
+                const leaf = new RadixNode(leafBytes, currNode, firstByte);
                 const entry = entryBuilder(leaf);
                 leaf.entries.set(mimeKey, entry);
                 leaf.entry = entry;
@@ -239,12 +267,12 @@ export class RadixRawTree {
 
             const prefixBytes = makeSliceBytes(child.bytes, childData, 0, commonLen);
             const oldSuffixBytes = makeSliceBytes(child.bytes, childData, commonLen, childLen - commonLen);
-            const splitNode = new RadixNode(prefixBytes, currNode);
+            const splitNode = new RadixNode(prefixBytes, currNode, childData[0]);
             currNode.children.set(firstByte, splitNode);
 
-            child.setBytes(oldSuffixBytes);
+            child.setBytes(oldSuffixBytes, childData[commonLen]);
             child.parent = splitNode;
-            splitNode.children.set(child.data[0], child);
+            splitNode.children.set(childData[commonLen], child);
 
             offset += commonLen;
             if (offset === totalLen) {
@@ -256,7 +284,7 @@ export class RadixRawTree {
                 return { isDuplicate: false, newEntry: entry };
             } else {
                 const newSuffixBytes = makeSliceBytes(gBytes, uIncoming, offset, totalLen - offset);
-                const newLeaf = new RadixNode(newSuffixBytes, splitNode);
+                const newLeaf = new RadixNode(newSuffixBytes, splitNode, uIncoming[offset]);
                 const entry = entryBuilder(newLeaf);
                 newLeaf.entries.set(mimeKey, entry);
                 newLeaf.entry = entry;
@@ -273,21 +301,20 @@ export class RadixRawTree {
         const node = this.#nodeByEntry.get(entry) || entry._radixNode;
         if (!node) return;
         this.#nodeByEntry.delete(entry);
-        if (entry.mime) {
-            const count = this.#mimeEntryCounts.get(entry.mime) || 1;
+        const normMime = normalizeMime(entry.mime);
+        if (normMime) {
+            const count = this.#mimeEntryCounts.get(normMime) || 1;
             if (count <= 1) {
-                this.#mimeEntryCounts.delete(entry.mime);
-                this._roots.delete(entry.mime);
+                this.#mimeEntryCounts.delete(normMime);
+                this._roots.delete(normMime);
             } else {
-                this.#mimeEntryCounts.set(entry.mime, count - 1);
+                this.#mimeEntryCounts.set(normMime, count - 1);
             }
         }
         if (node.entries) {
-            if (entry.mime) node.entries.delete(entry.mime);
-            else {
-                for (const [m, e] of node.entries.entries()) {
-                    if (e === entry) { node.entries.delete(m); break; }
-                }
+            if (normMime) node.entries.delete(normMime);
+            for (const [m, e] of node.entries.entries()) {
+                if (e === entry) { node.entries.delete(m); break; }
             }
             node.entry = node.entries.size > 0 ? node.entries.values().next().value : null;
         } else {
@@ -305,9 +332,10 @@ export class RadixRawTree {
                 out.close(null);
                 const mergedBytes = out.steal_as_bytes();
 
-                onlyChild.setBytes(mergedBytes);
+                const firstByte = n.firstByte;
+                onlyChild.setBytes(mergedBytes, firstByte);
                 onlyChild.parent = n.parent;
-                n.parent.children.set(n.data[0], onlyChild);
+                n.parent.children.set(firstByte, onlyChild);
                 tryCollapse(n.parent);
             }
         };
@@ -315,7 +343,7 @@ export class RadixRawTree {
         let curr = node;
         while (curr && curr.parent && curr.children.size === 0 && (!curr.entries || curr.entries.size === 0) && !curr.entry) {
             const parent = curr.parent;
-            parent.children.delete(curr.data[0]);
+            parent.children.delete(curr.firstByte);
             curr = parent;
         }
         if (curr) tryCollapse(curr);
@@ -359,7 +387,7 @@ export function detectCoreMime(mimeTypes) {
     if (hasHtml && textMime) {
         return { type: 'composite', mime: 'composite', htmlMime: 'text/html', textMime };
     }
-    if (textMime) return { mime: textMime, type: 'text' };
+    if (textMime) return { mime: 'text/plain', sourceMime: textMime, type: 'text' };
     if (hasHtml) return { mime: 'text/html', type: 'html' };
 
     const valid = mimeTypes.filter(m => !m.startsWith('TARGETS') && !m.startsWith('TIMESTAMP') && !m.startsWith('MULTIPLE'));
@@ -1385,7 +1413,8 @@ export default class RawClipboardExtension extends Extension {
                 gBytes = packCompositeBytes(compositeParts);
                 size = htmlRes.bytes.get_size() + textBytes.get_size();
             } else {
-                const res = await this._readMimeStream(selectionSource, core.mime, readCancellable, resetWatchdog, maxPayloadBytes, 0);
+                const readMime = core.sourceMime || core.mime;
+                const res = await this._readMimeStream(selectionSource, readMime, readCancellable, resetWatchdog, maxPayloadBytes, 0);
                 if (res.isOversized) return;
                 if (readCancellable.is_cancelled() || !this._cancellable || this._cancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) {
                     return;
@@ -1495,19 +1524,21 @@ export default class RawClipboardExtension extends Extension {
             }
         }
 
-        // 3. 全局总内存上限裁剪 (FIFO)
-        let totalEntryBytes = this.#history.reduce((sum, item) => sum + (typeof item.size === 'number' ? item.size : (item.bytes?.get_size ? item.bytes.get_size() : 0)), 0);
-        let totalTreeBytes = this.#radixTree.getTotalBytes ? this.#radixTree.getTotalBytes() : totalEntryBytes;
-        let totalBytes = Math.max(totalEntryBytes, totalTreeBytes);
+        // 3. 全局总内存上限裁剪 (FIFO) - 依据前缀树实际物理内存占用判定配额，充分发挥前缀复用节省优势
+        const getPhysicalBytes = () => {
+            if (this.#radixTree && typeof this.#radixTree.getTotalBytes === 'function') {
+                return this.#radixTree.getTotalBytes();
+            }
+            return this.#history.reduce((sum, item) => sum + (typeof item.size === 'number' ? item.size : (item.bytes?.get_size ? item.bytes.get_size() : 0)), 0);
+        };
+        let totalBytes = getPhysicalBytes();
 
         while (this.#history.length > 0 && totalBytes > maxTotalBytes) {
             const popped = this.#history.pop();
             if (popped) {
                 this._log(`[RawClipboard] 超过历史总内存上限 (${maxTotalMb} MB)，淘汰最旧条目: ${this._formatEntryLog(popped)}`);
                 purgeItem(popped);
-                totalEntryBytes -= (typeof popped.size === 'number' ? popped.size : (popped.bytes?.get_size ? popped.bytes.get_size() : 0));
-                totalTreeBytes = this.#radixTree.getTotalBytes ? this.#radixTree.getTotalBytes() : totalEntryBytes;
-                totalBytes = Math.max(totalEntryBytes, totalTreeBytes);
+                totalBytes = getPhysicalBytes();
             }
         }
 
