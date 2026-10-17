@@ -14,7 +14,7 @@ export default class RawClipboardPreferences extends ExtensionPreferences {
         });
         window.add(page);
 
-        const versionName = this.metadata?.['version-name'] || (this.metadata?.version ? `v${this.metadata.version}` : 'v92');
+        const versionName = this.metadata?.['version-name'] || (this.metadata?.version ? `v${this.metadata.version}` : 'v93');
         const group = new Adw.PreferencesGroup({
             title: `基础设置 (${versionName})\nGeneral Settings (${versionName})`,
             description: '剪贴板历史仅保存在内存中，注销或重启后自动清空，保护隐私且零磁盘写入\nClipboard history is kept in memory only and cleared upon logout or reboot, protecting privacy with zero disk writes.',
