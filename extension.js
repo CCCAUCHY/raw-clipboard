@@ -154,6 +154,35 @@ export function getSemanticMimeKey(mime) {
     return `${base};${params}`;
 }
 
+export function getCanonicalServedMime(mime) {
+    if (!mime || typeof mime !== 'string') return 'text/plain';
+    const trimmed = mime.trim();
+    const base = normalizeBaseMime(trimmed);
+    if (['text/plain', 'utf8_string', 'string', 'text'].includes(base)) {
+        const parts = trimmed.split(';');
+        if (parts.length > 1) {
+            const params = parts.slice(1).map(p => p.trim().toLowerCase()).filter(Boolean);
+            if (params.every(p => p === 'charset=utf-8' || p === 'charset=utf8' || p === 'charset=us-ascii' || p === 'charset=ascii')) {
+                return 'text/plain';
+            }
+            return trimmed;
+        }
+        return 'text/plain';
+    }
+    if (base === 'text/html') {
+        const parts = trimmed.split(';');
+        if (parts.length > 1) {
+            const params = parts.slice(1).map(p => p.trim().toLowerCase()).filter(Boolean);
+            if (params.every(p => p === 'charset=utf-8' || p === 'charset=utf8' || p === 'charset=us-ascii' || p === 'charset=ascii')) {
+                return 'text/html';
+            }
+            return trimmed;
+        }
+        return 'text/html';
+    }
+    return trimmed;
+}
+
 export function normalizeMime(mime) {
     if (!mime) return 'default';
     const base = normalizeBaseMime(mime);
@@ -1893,7 +1922,9 @@ export default class RawClipboardExtension extends Extension {
                 // 优雅降级决策：双路均成功则封装复合条目；任一路失败/空则降级为单格式条目，杜绝整条丢弃
                 if (htmlBytes && textBytes) {
                     core.htmlMime = htmlRes.mime || core.htmlMime || 'text/html';
-                    core.textMime = textRes.mime || core.textMime || 'text/plain';
+                    core.textMime = (textRes.mime && normalizeBaseMime(textRes.mime) === 'text/plain')
+                        ? 'text/plain'
+                        : (textRes.mime || core.textMime || 'text/plain');
                     compositeParts = [
                         { mime: core.htmlMime, bytes: htmlBytes },
                         { mime: core.textMime, bytes: textBytes },
@@ -1931,7 +1962,7 @@ export default class RawClipboardExtension extends Extension {
                 gBytes = res.bytes;
                 size = gBytes.get_size();
                 if (res.mime) {
-                    core.mime = res.mime;
+                    core.mime = (core.type === 'text') ? 'text/plain' : res.mime;
                     if (core.type === 'text') {
                         core.sourceMime = res.mime;
                     }
@@ -2108,16 +2139,18 @@ export default class RawClipboardExtension extends Extension {
                     return;
                 }
 
+                const servedMime = getCanonicalServedMime(mime);
+
                 if (Meta?.SelectionSourceMemory?.new) {
-                    try { source = Meta.SelectionSourceMemory.new(mime, contentBytes); } catch {}
+                    try { source = Meta.SelectionSourceMemory.new(servedMime, contentBytes); } catch {}
                 }
 
                 if (source) {
                     source[RESTORE_NONCE] = nonce;
                     if (this._selection?.set_owner) this._selection.set_owner(Meta.SelectionType.SELECTION_CLIPBOARD, source);
-                    else St.Clipboard.get_default().set_content(St.ClipboardType.CLIPBOARD, mime, contentBytes);
+                    else St.Clipboard.get_default().set_content(St.ClipboardType.CLIPBOARD, servedMime, contentBytes);
                 } else {
-                    St.Clipboard.get_default().set_content(St.ClipboardType.CLIPBOARD, mime, contentBytes);
+                    St.Clipboard.get_default().set_content(St.ClipboardType.CLIPBOARD, servedMime, contentBytes);
                 }
 
                 // 仅当发布真正成功后，原子提交历史置顶与软删除解除
@@ -2182,6 +2215,7 @@ export default class RawClipboardExtension extends Extension {
         if (!textBytes || textBytes.get_size() === 0) return;
 
         const mime = 'text/plain;charset=utf-8';
+        const servedMime = getCanonicalServedMime(mime);
         const copyTime = Date.now();
         const nonce = GLib.uuid_string_random();
         this.#activeNonces.add(nonce);
@@ -2194,14 +2228,14 @@ export default class RawClipboardExtension extends Extension {
         try {
             let source = null;
             if (Meta?.SelectionSourceMemory?.new) {
-                try { source = Meta.SelectionSourceMemory.new(mime, textBytes); } catch {}
+                try { source = Meta.SelectionSourceMemory.new(servedMime, textBytes); } catch {}
             }
             if (source) {
                 source[RESTORE_NONCE] = nonce;
                 if (this._selection?.set_owner) this._selection.set_owner(Meta.SelectionType.SELECTION_CLIPBOARD, source);
-                else St.Clipboard.get_default().set_content(St.ClipboardType.CLIPBOARD, mime, textBytes);
+                else St.Clipboard.get_default().set_content(St.ClipboardType.CLIPBOARD, servedMime, textBytes);
             } else {
-                St.Clipboard.get_default().set_content(St.ClipboardType.CLIPBOARD, mime, textBytes);
+                St.Clipboard.get_default().set_content(St.ClipboardType.CLIPBOARD, servedMime, textBytes);
             }
         } finally {
             this._isRestoring = false;

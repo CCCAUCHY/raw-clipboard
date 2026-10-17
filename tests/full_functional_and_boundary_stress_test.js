@@ -5087,6 +5087,13 @@ await reporter.run('16.11 参数化 MIME 归一化捕获与跨应用去重测试
     assert(getExtItemCount(ext) === 1, '相同文本跨应用复制 100% 命中去重，条目数保持 1');
     assert(ext._getEntry(0).preview === textA, '条目内容正确');
 
+    // 3. 验证回灌时向系统剪贴板发布的 MIME 必须为规范的 text/plain，不得携带 charset 参数以免火狐等 Wayland 客户端无法匹配
+    globalThis._lastOwnedSource = null;
+    ext._restoreEntry(ext._getEntry(0));
+    const restored = globalThis._lastOwnedSource;
+    assert(restored !== null, '成功回灌纯文本条目');
+    assert(restored.get_mimetypes()[0] === 'text/plain', '回灌 MIME 必须为规范的 text/plain，杜绝 text/plain;charset=UTF-8 导致火狐无法粘贴');
+
     ext.disable();
 });
 
