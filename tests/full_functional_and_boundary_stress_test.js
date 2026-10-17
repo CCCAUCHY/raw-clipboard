@@ -483,6 +483,9 @@ await reporter.run('1.2 条目数 1 <= T <= 8 时：弹窗高度恒定为 8 条�
         assert(ext._undoBtn !== null, `T=${t} 左下角撤销按钮必须存在`);
         assert(ext._pageBadge.visible === false, `T=${t} <= 8 单页状态下页码应隐藏`);
         assert(ext._itemActors.length === t, `T=${t} 当前页条目渲染数必须为 ${t}`);
+        const slot0 = ext._itemSlots[0];
+        assert(slot0.previewLabel.clutter_text.ellipsize === Pango.EllipsizeMode.END, 'previewLabel 必须设置 END 省略号截断');
+        assert(slot0.subLabel.clutter_text.ellipsize === Pango.EllipsizeMode.END, 'subLabel 必须显式设置 END 省略号截断');
         ext._closePopup();
     }
 

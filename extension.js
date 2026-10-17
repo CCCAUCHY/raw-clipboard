@@ -3023,7 +3023,10 @@ export default class RawClipboardExtension extends Extension {
             previewLabel.clutter_text.ellipsize = Pango.EllipsizeMode.END;
         }
         const subLabel = new St.Label({ text: '', style_class: 'raw-clipboard-item-sub' });
-        if (subLabel.clutter_text) subLabel.clutter_text.use_markup = false;
+        if (subLabel.clutter_text) {
+            subLabel.clutter_text.use_markup = false;
+            subLabel.clutter_text.ellipsize = Pango.EllipsizeMode.END;
+        }
         contentBox.add_child(previewLabel);
         contentBox.add_child(subLabel);
         itemBox.add_child(contentBox);
