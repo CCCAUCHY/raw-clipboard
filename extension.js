@@ -516,7 +516,7 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
             if (lines.length === 0) {
                 return {
                     title: isEn ? 'File List' : '文件列表',
-                    subtitle: isEn ? 'Files · 0 items (path only, no disk read)' : '文件 · 0 项 (仅存路径，不读内容)',
+                    subtitle: isEn ? 'Files/Folders · 0 items (path only, no disk read)' : '文件/目录 · 0 项 (仅存路径，不读内容)',
                     icon: ICON_FILES,
                 };
             }
@@ -551,7 +551,7 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
 
             const isAllDir = dirCount === totalCount;
             const isMixed = dirCount > 0 && !isAllDir;
-            const label = isAllDir ? (isEn ? 'Folders' : '文件夹') : (isMixed ? (isEn ? 'Files/Folders' : '文件/目录') : (isEn ? 'Files' : '文件'));
+            const label = isEn ? 'Files/Folders' : '文件/目录';
             const countStr = isCapped ? `${totalCount}+` : `${totalCount}`;
             const suffix = isAllDir ? (isEn ? `and ${countStr} folders` : `等 ${countStr} 个文件夹`) : (isMixed ? (isEn ? `and ${countStr} items` : `等 ${countStr} 项`) : (isEn ? `and ${countStr} files` : `等 ${countStr} 个文件`));
 
@@ -682,8 +682,8 @@ export default class RawClipboardExtension extends Extension {
         if (entry.type === 'files') {
             const sub = entry.subtitle || '';
             return isEn
-                ? sub.replace('文件夹', 'Folders').replace('文件/目录', 'Files/Folders').replace('文件', 'Files').replace('项 (仅存路径，不读内容)', 'items (path only, no disk read)')
-                : sub.replace('Folders', '文件夹').replace('Files/Folders', '文件/目录').replace('Files', '文件').replace('items (path only, no disk read)', '项 (仅存路径，不读内容)');
+                ? sub.replace('文件/目录', 'Files/Folders').replace('文件夹', 'Files/Folders').replace('文件', 'Files/Folders').replace('项 (仅存路径，不读内容)', 'items (path only, no disk read)')
+                : sub.replace('Files/Folders', '文件/目录').replace('Folders', '文件/目录').replace('Files', '文件/目录').replace('items (path only, no disk read)', '项 (仅存路径，不读内容)');
         }
         if (entry.type === 'unknown' || entry.type === 'raw') return formatByteSize(entry.size);
         return entry.subtitle || '';
@@ -947,7 +947,7 @@ export default class RawClipboardExtension extends Extension {
                 mime: core.mime,
                 type: 'files',
                 icon: ICON_FILES,
-                label: isEn ? 'Files' : '文件',
+                label: isEn ? 'Files/Folders' : '文件/目录',
                 get bytes() { return entryRef.bytes; },
             });
         } else if (core.type === 'image') {

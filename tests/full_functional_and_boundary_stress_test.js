@@ -1275,7 +1275,7 @@ await reporter.run('6.5 敏感凭据/密码捕获测试 (密码管理器文本�
     ext.disable();
 });
 
-await reporter.run('6.6 目录与文件统一 folder-symbolic 图标测试 (单目录、多目录、单文件、多文件统一使用文件管理器图标)', async () => {
+await reporter.run('6.6 目录与文件统一 folder-symbolic 图标与“文件/目录”类型标签测试 (单目录、多目录、单文件、多文件统一使用文件管理器图标与文件/目录)', async () => {
     const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
     ext.enable();
 
@@ -1285,7 +1285,7 @@ await reporter.run('6.6 目录与文件统一 folder-symbolic 图标测试 (单�
         new MockSelectionSource(['text/uri-list'], new TextEncoder().encode(singleDirUri)));
     let item = getExtItem(ext, 0);
     assert(item.title === 'my_folder', `单目录名实际: ${item.title}`);
-    assert(item.subtitle.includes('文件夹 · 1 项'), `单目录副标题实际: ${item.subtitle}`);
+    assert(item.subtitle.includes('文件/目录 · 1 项'), `单目录副标题实际: ${item.subtitle}`);
     assert(item.iconName === 'folder-symbolic', `单目录图标实际: ${item.iconName}`);
 
     // 2. 复制无尾部斜杠路径
@@ -1294,7 +1294,7 @@ await reporter.run('6.6 目录与文件统一 folder-symbolic 图标测试 (单�
         new MockSelectionSource(['text/uri-list'], new TextEncoder().encode(noSlashUri)));
     item = getExtItem(ext, 0);
     assert(item.title === 'raw-clipboard', `无斜杠文件名实际: ${item.title}`);
-    assert(item.subtitle.includes('文件 · 1 项'), `无斜杠副标题实际: ${item.subtitle}`);
+    assert(item.subtitle.includes('文件/目录 · 1 项'), `无斜杠副标题实际: ${item.subtitle}`);
     assert(item.iconName === 'folder-symbolic', `无斜杠文件图标统一为 folder-symbolic，实际: ${item.iconName}`);
 
     // 3. 复制多个目录
@@ -1303,7 +1303,7 @@ await reporter.run('6.6 目录与文件统一 folder-symbolic 图标测试 (单�
         new MockSelectionSource(['text/uri-list'], new TextEncoder().encode(multiDirUri)));
     item = getExtItem(ext, 0);
     assert(item.title.includes('等 3 个文件夹'), `多目录标题实际: ${item.title}`);
-    assert(item.subtitle.includes('文件夹 · 3 项'), `多目录副标题实际: ${item.subtitle}`);
+    assert(item.subtitle.includes('文件/目录 · 3 项'), `多目录副标题实际: ${item.subtitle}`);
     assert(item.iconName === 'folder-symbolic', `多目录图标实际: ${item.iconName}`);
 
     // 4. 复制普通文件 (folder-symbolic)
@@ -1312,7 +1312,7 @@ await reporter.run('6.6 目录与文件统一 folder-symbolic 图标测试 (单�
         new MockSelectionSource(['text/uri-list'], new TextEncoder().encode(singleFileUri)));
     item = getExtItem(ext, 0);
     assert(item.title === 'regular_file.txt', `单文件名实际: ${item.title}`);
-    assert(item.subtitle.includes('文件 · 1 项'), `单文件副标题实际: ${item.subtitle}`);
+    assert(item.subtitle.includes('文件/目录 · 1 项'), `单文件副标题实际: ${item.subtitle}`);
     assert(item.iconName === 'folder-symbolic', `单文件图标统一为 folder-symbolic，实际: ${item.iconName}`);
 
     ext.disable();

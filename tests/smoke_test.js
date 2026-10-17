@@ -57,7 +57,7 @@ function generatePreview(type, mime, gBytes) {
     if (type === 'files') {
         const str = Utf8Decoder.decode(gBytes.toArray().subarray(0, 100));
         const lines = str.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#') && l !== 'copy' && l !== 'cut');
-        return { title: `文件: ${lines.join(', ')}`, subtitle: `文件 · (仅存路径，不读内容) · ${sizeStr}` };
+        return { title: `文件: ${lines.join(', ')}`, subtitle: `文件/目录 · (仅存路径，不读内容) · ${sizeStr}` };
     }
     return { title: mime, subtitle: sizeStr };
 }
