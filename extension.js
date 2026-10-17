@@ -133,6 +133,27 @@ export function normalizeBaseMime(mime) {
     return mime.trim().toLowerCase().split(';')[0].trim();
 }
 
+export function getSemanticMimeKey(mime) {
+    if (!mime || typeof mime !== 'string') return '';
+    const trimmed = mime.trim();
+    const base = normalizeBaseMime(trimmed);
+    if (['utf8_string', 'string', 'text'].includes(base)) {
+        return 'text/plain';
+    }
+    if (base === 'text/plain') {
+        const parts = trimmed.split(';');
+        if (parts.length === 1) return 'text/plain';
+        const params = parts.slice(1).map(p => p.trim().toLowerCase()).filter(Boolean).sort();
+        const nonUtf8Params = params.filter(p => p !== 'charset=utf-8' && p !== 'charset=utf8');
+        if (nonUtf8Params.length === 0) return 'text/plain';
+        return `text/plain;${nonUtf8Params.join(';')}`;
+    }
+    const parts = trimmed.split(';');
+    if (parts.length === 1) return base;
+    const params = parts.slice(1).map(p => p.trim().toLowerCase()).filter(Boolean).sort().join(';');
+    return `${base};${params}`;
+}
+
 export function normalizeMime(mime) {
     if (!mime) return 'default';
     const base = normalizeBaseMime(mime);
@@ -210,10 +231,18 @@ export class RadixRawTree {
 
     get root() { return this._root; }
     get rootCount() { return this._roots.size; }
-    hasRoot(mime) { return this._roots.has(normalizeMime(mime)); }
-    getRoot(mime) { const k = normalizeMime(mime); return this._roots.has(k) ? this._root : null; }
+    hasRoot(mime) {
+        const k1 = getSemanticMimeKey(mime);
+        const k2 = normalizeMime(mime);
+        return this._roots.has(k1) || this._roots.has(k2);
+    }
+    getRoot(mime) {
+        const k1 = getSemanticMimeKey(mime);
+        const k2 = normalizeMime(mime);
+        return (this._roots.has(k1) || this._roots.has(k2)) ? this._root : null;
+    }
     _getRoot(mime) {
-        const k = normalizeMime(mime);
+        const k = getSemanticMimeKey(mime) || normalizeMime(mime);
         if (!this._roots.has(k)) {
             this._roots.set(k, this._root);
         }
@@ -225,9 +254,11 @@ export class RadixRawTree {
     }
 
     insert(mime, gBytes, entryBuilder) {
+        const semanticKey = getSemanticMimeKey(mime) || normalizeMime(mime);
+        if (semanticKey) this._roots.set(semanticKey, this._root);
         const normMime = normalizeMime(mime);
         if (normMime) this._roots.set(normMime, this._root);
-        const mimeKey = normMime;
+        const mimeKey = semanticKey;
         const totalLen = gBytes.get_size();
         const uIncoming = gBytes.get_data();
         let currNode = this._root;
@@ -313,8 +344,18 @@ export class RadixRawTree {
         const node = this.#nodeByEntry.get(entry) || entry._radixNode;
         if (!node) return;
         this.#nodeByEntry.delete(entry);
+        const semanticKey = getSemanticMimeKey(entry.mime) || normalizeMime(entry.mime);
         const normMime = normalizeMime(entry.mime);
-        if (normMime) {
+        if (semanticKey) {
+            const count = this.#mimeEntryCounts.get(semanticKey) || 1;
+            if (count <= 1) {
+                this.#mimeEntryCounts.delete(semanticKey);
+                this._roots.delete(semanticKey);
+            } else {
+                this.#mimeEntryCounts.set(semanticKey, count - 1);
+            }
+        }
+        if (normMime && normMime !== semanticKey) {
             const count = this.#mimeEntryCounts.get(normMime) || 1;
             if (count <= 1) {
                 this.#mimeEntryCounts.delete(normMime);
@@ -324,6 +365,7 @@ export class RadixRawTree {
             }
         }
         if (node.entries) {
+            if (semanticKey) node.entries.delete(semanticKey);
             if (normMime) node.entries.delete(normMime);
             for (const [m, e] of node.entries.entries()) {
                 if (e === entry) { node.entries.delete(m); break; }
@@ -657,19 +699,23 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
             const htmlPart = extra?.htmlBytes || extractCompositePart(gBytes, m => normalizeBaseMime(m) === 'text/html');
             if (htmlPart) clean = extractTextPreview(htmlPart, true);
         }
+        const isEmpty = !clean;
         return {
             title: clean.length > 1000 ? `${safeSlice(clean, 1000)}…` : (clean || (isEn ? '(Empty text)' : '(空文本)')),
             subtitle: `${isEn ? 'Multi-type' : '多类型'} · ${sizeStr}`,
             icon: ICON_HTML,
+            isEmptyText: isEmpty,
         };
     }
 
     if (type === 'text' || type === 'html') {
         const clean = extractTextPreview(gBytes, false);
+        const isEmpty = !clean;
         return {
             title: clean.length > 1000 ? `${safeSlice(clean, 1000)}…` : (clean || (isEn ? '(Empty text)' : '(空文本)')),
             subtitle: `${type === 'html' ? (isEn ? 'HTML' : '富文本') : (isEn ? 'Text' : '文本')} · ${sizeStr}`,
             icon: type === 'html' ? ICON_HTML : ICON_TEXT,
+            isEmptyText: isEmpty,
         };
     }
 
@@ -799,11 +845,13 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
         };
     }
 
+    const isUnknownTag = !mime && !unknownTypeName;
     const tag = mime || unknownTypeName || (isEn ? 'Unknown Type' : '未知类型');
     return {
         title: tag.length > 200 ? `${safeSlice(tag, 200)}…` : tag,
         subtitle: sizeStr,
         icon: ICON_RAW,
+        isUnknownType: isUnknownTag,
     };
 }
 
@@ -924,14 +972,11 @@ export default class RawClipboardExtension extends Extension {
         if (entry.type === 'image') {
             return isEn ? `Image (${formatByteSize(entry.size)})` : `图片 (${formatByteSize(entry.size)})`;
         }
-        if (entry.preview === '(空文本)' || entry.preview === '(Empty text)') {
+        if (entry.isEmptyText) {
             return isEn ? '(Empty text)' : '(空文本)';
         }
-        if (entry.type === 'unknown' || entry.type === 'raw') {
-            if (entry.preview === '未知类型' || entry.preview === 'Unknown Type') {
-                return isEn ? 'Unknown Type' : '未知类型';
-            }
-            return entry.preview || entry.mime || (isEn ? 'Unknown Type' : '未知类型');
+        if (entry.isUnknownType) {
+            return isEn ? 'Unknown Type' : '未知类型';
         }
         return entry.preview || '';
     }
@@ -967,7 +1012,7 @@ export default class RawClipboardExtension extends Extension {
     _enterSearchMode(initialChar = '') {
         this._loopArmDirection = null;
         this._inSearchMode = true;
-        this._searchQuery = (initialChar || '').slice(0, MAX_SEARCH_QUERY_LEN);
+        this._searchQuery = safeSlice(initialChar || '', MAX_SEARCH_QUERY_LEN);
         if (this._sortBar) this._sortBar.hide();
         if (this._searchBar) this._searchBar.show();
         this._updateSearchDisplay();
@@ -1159,7 +1204,7 @@ export default class RawClipboardExtension extends Extension {
             });
         } else if (core.type === 'html') {
             entryFormats.push({
-                mime: 'text/html',
+                mime: core.mime || 'text/html',
                 type: 'html',
                 icon: ICON_HTML,
                 label: isEn ? 'HTML' : '富文本',
@@ -1227,6 +1272,9 @@ export default class RawClipboardExtension extends Extension {
             },
             get thumbIcon() {
                 if (core.type === 'image') {
+                    if (thisRef.#thumbnailCache.has(entryRef)) {
+                        return thisRef.#thumbnailCache.get(entryRef);
+                    }
                     return thisRef._getThumbnail(entryRef, this.bytes, core.mime);
                 }
                 return null;
@@ -1235,6 +1283,8 @@ export default class RawClipboardExtension extends Extension {
             subtitle: previewInfo.subtitle,
             icon: previewInfo.icon,
             fileCountStr: previewInfo.fileCountStr || null,
+            isEmptyText: previewInfo.isEmptyText || false,
+            isUnknownType: previewInfo.isUnknownType || false,
             get time() { return entryTime; },
             set time(val) { if (typeof val === 'number') entryTime = val; },
         });
@@ -1369,16 +1419,24 @@ export default class RawClipboardExtension extends Extension {
 
     _cancelThumbnailTask(entry) {
         if (!entry) return;
-        const sourceId = this.#thumbnailTasks.get(entry);
-        if (sourceId) {
-            try { GLib.source_remove(sourceId); } catch {}
+        const task = this.#thumbnailTasks.get(entry);
+        if (task) {
             this.#thumbnailTasks.delete(entry);
+            if (typeof task === 'number') {
+                try { GLib.source_remove(task); } catch {}
+            } else if (task && typeof task.dispose === 'function') {
+                task.dispose();
+            }
         }
     }
 
     _cancelAllThumbnailTasks() {
-        for (const [, sourceId] of this.#thumbnailTasks) {
-            try { GLib.source_remove(sourceId); } catch {}
+        for (const [, task] of this.#thumbnailTasks) {
+            if (typeof task === 'number') {
+                try { GLib.source_remove(task); } catch {}
+            } else if (task && typeof task.dispose === 'function') {
+                task.dispose();
+            }
         }
         this.#thumbnailTasks.clear();
     }
@@ -1494,17 +1552,23 @@ export default class RawClipboardExtension extends Extension {
         const CHUNK = 64 * 1024;
         let totalFed = 0;
 
-        const cleanup = () => {
-            if (this.#thumbnailTasks.get(entry) === sourceId) {
-                this.#thumbnailTasks.delete(entry);
+        const task = {
+            sourceId: 0,
+            stream,
+            loader: state.loader,
+            dispose() {
+                if (this.sourceId > 0) {
+                    try { GLib.source_remove(this.sourceId); } catch {}
+                    this.sourceId = 0;
+                }
+                try { this.stream.close(null); } catch {}
+                try { this.loader.close(); } catch {}
             }
-            try { stream.close(null); } catch {}
         };
 
-        const sourceId = GLib.idle_add(GLib.PRIORITY_LOW, () => {
-            if (!this.#thumbnailTasks.has(entry) || this.#thumbnailTasks.get(entry) !== sourceId) {
-                cleanup();
-                try { state.loader.close(); } catch {}
+        task.sourceId = GLib.idle_add(GLib.PRIORITY_LOW, () => {
+            if (!this.#thumbnailTasks.has(entry) || this.#thumbnailTasks.get(entry) !== task) {
+                task.dispose();
                 return GLib.SOURCE_REMOVE;
             }
 
@@ -1513,7 +1577,8 @@ export default class RawClipboardExtension extends Extension {
                     if (state.exceeded) break;
                     const chunk = stream.read_bytes(CHUNK, null);
                     if (!chunk || chunk.get_size() === 0) {
-                        cleanup();
+                        this.#thumbnailTasks.delete(entry);
+                        task.dispose();
                         const icon = this._finishThumbnailLoader(state);
                         this.#thumbnailCache.set(entry, icon);
                         if (icon) this._onThumbnailReady(entry, icon);
@@ -1528,22 +1593,22 @@ export default class RawClipboardExtension extends Extension {
                 }
 
                 if (state.exceeded) {
-                    cleanup();
-                    try { state.loader.close(); } catch {}
+                    this.#thumbnailTasks.delete(entry);
+                    task.dispose();
                     this.#thumbnailCache.set(entry, null);
                     return GLib.SOURCE_REMOVE;
                 }
 
                 return GLib.SOURCE_CONTINUE;
             } catch {
-                cleanup();
-                try { state.loader.close(); } catch {}
+                this.#thumbnailTasks.delete(entry);
+                task.dispose();
                 this.#thumbnailCache.set(entry, null);
                 return GLib.SOURCE_REMOVE;
             }
         });
 
-        this.#thumbnailTasks.set(entry, sourceId);
+        this.#thumbnailTasks.set(entry, task);
     }
 
     _ensureThumbnail(entry, gBytes, mime) {
@@ -1629,11 +1694,16 @@ export default class RawClipboardExtension extends Extension {
                 const CHUNK_SIZE = 64 * 1024;
                 let totalRead = currentTotalRead;
 
+                let reachedEof = false;
+
                 while (true) {
                     if (candidateCancellable.is_cancelled() || readCancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) break;
                     const bytes = await callAsync(inputStream, 'read_bytes_async', 'read_bytes_finish', CHUNK_SIZE, GLib.PRIORITY_DEFAULT, candidateCancellable);
                     const chunkSize = bytes ? bytes.get_size() : 0;
-                    if (chunkSize === 0) break;
+                    if (chunkSize === 0) {
+                        reachedEof = true;
+                        break;
+                    }
 
                     totalRead += chunkSize;
                     if (totalRead > maxPayloadBytes) {
@@ -1649,7 +1719,7 @@ export default class RawClipboardExtension extends Extension {
                     return { isOversized: true, mime, bytes: null };
                 }
 
-                if (readCancellable.is_cancelled() || !this._cancellable || this._cancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) {
+                if (candidateCancellable.is_cancelled() || readCancellable.is_cancelled() || !reachedEof || !this._cancellable || this._cancellable.is_cancelled() || this._currentReadCancellable !== readCancellable) {
                     return null;
                 }
 
@@ -1822,9 +1892,11 @@ export default class RawClipboardExtension extends Extension {
 
                 // 优雅降级决策：双路均成功则封装复合条目；任一路失败/空则降级为单格式条目，杜绝整条丢弃
                 if (htmlBytes && textBytes) {
+                    core.htmlMime = htmlRes.mime || core.htmlMime || 'text/html';
+                    core.textMime = textRes.mime || core.textMime || 'text/plain';
                     compositeParts = [
-                        { mime: htmlRes.mime || core.htmlMime || 'text/html', bytes: htmlBytes },
-                        { mime: textRes.mime || core.textMime || 'text/plain', bytes: textBytes },
+                        { mime: core.htmlMime, bytes: htmlBytes },
+                        { mime: core.textMime, bytes: textBytes },
                     ];
                     gBytes = packCompositeBytes(compositeParts);
                     size = htmlBytes.get_size() + textBytes.get_size();
@@ -1858,8 +1930,11 @@ export default class RawClipboardExtension extends Extension {
                 }
                 gBytes = res.bytes;
                 size = gBytes.get_size();
-                if (res.mime && core.type !== 'text') {
+                if (res.mime) {
                     core.mime = res.mime;
+                    if (core.type === 'text') {
+                        core.sourceMime = res.mime;
+                    }
                 }
             }
 
@@ -1988,21 +2063,11 @@ export default class RawClipboardExtension extends Extension {
     _restoreEntryFormat(entry, targetMime = null) {
         const entrySize = typeof entry?.size === 'number' ? entry.size : (entry?.bytes?.get_size ? entry.bytes.get_size() : 0);
         if (entrySize <= 0) return;
-        const selectedMime = targetMime || ((entry.type === 'composite') ? 'text/html' : (entry.formats?.[0]?.mime || entry.mime));
+        const selectedMime = targetMime || ((entry.type === 'composite')
+            ? (entry.formats?.[0]?.mime || entry.htmlMime || 'text/html')
+            : (entry.formats?.[0]?.mime || entry.mime));
 
         try {
-            if (this.#deletedEntries.has(entry)) {
-                this.#deletedEntries.delete(entry);
-                this._undoStack = this._undoStack.filter(e => e !== entry);
-                this._updateUndoButton();
-            }
-
-            const idx = this.#history.indexOf(entry);
-            if (idx > 0) {
-                this.#history.splice(idx, 1);
-                this.#history.unshift(entry);
-            }
-
             const nonce = GLib.uuid_string_random();
             this.#activeNonces.add(nonce);
             this._addTimeout(500, () => {
@@ -2016,10 +2081,10 @@ export default class RawClipboardExtension extends Extension {
                 if (entry.type === 'composite') {
                     const baseSelected = normalizeBaseMime(mime);
                     if (baseSelected === 'text/html' || baseSelected.includes('html')) {
-                        mime = 'text/html';
+                        mime = entry.htmlMime || selectedMime || 'text/html';
                         contentBytes = entry.htmlBytes || entry.bytes;
                     } else if (baseSelected === 'text/plain' || ['text/plain', 'utf8_string', 'string', 'text'].includes(baseSelected)) {
-                        mime = 'text/plain';
+                        mime = entry.textMime || selectedMime || 'text/plain';
                         contentBytes = entry.textBytes;
                         if (!contentBytes || contentBytes.get_size() === 0) {
                             const htmlBytes = entry.htmlBytes || entry.bytes;
@@ -2054,6 +2119,19 @@ export default class RawClipboardExtension extends Extension {
                 } else {
                     St.Clipboard.get_default().set_content(St.ClipboardType.CLIPBOARD, mime, contentBytes);
                 }
+
+                // 仅当发布真正成功后，原子提交历史置顶与软删除解除
+                if (this.#deletedEntries.has(entry)) {
+                    this.#deletedEntries.delete(entry);
+                    this._undoStack = this._undoStack.filter(e => e !== entry);
+                    this._updateUndoButton();
+                }
+
+                const idx = this.#history.indexOf(entry);
+                if (idx > 0) {
+                    this.#history.splice(idx, 1);
+                    this.#history.unshift(entry);
+                }
             } finally {
                 this._isRestoring = false;
             }
@@ -2064,7 +2142,9 @@ export default class RawClipboardExtension extends Extension {
 
     _restoreEntry(entry) {
         if (!entry) return;
-        const defaultMime = (entry.type === 'composite') ? 'text/html' : (entry.formats?.[0]?.mime || entry.mime);
+        const defaultMime = (entry.type === 'composite')
+            ? (entry.formats?.[0]?.mime || entry.htmlMime || 'text/html')
+            : (entry.formats?.[0]?.mime || entry.mime);
         this._restoreEntryFormat(entry, defaultMime);
     }
 
@@ -2185,7 +2265,7 @@ export default class RawClipboardExtension extends Extension {
         } else if (indexOrEntry && typeof indexOrEntry === 'object') {
             entry = indexOrEntry;
         }
-        if (!entry) return;
+        if (!entry || !this.#history.includes(entry) || this.#deletedEntries.has(entry)) return;
 
         this.#deletedEntries.add(entry);
         this._undoStack.push(entry);
@@ -2570,7 +2650,7 @@ export default class RawClipboardExtension extends Extension {
             this._popup.set_position(posX, posY);
 
             // 触控板与鼠标滚轮事件处理
-            let lastScrollTime = 0, lastScrollDir = 0, smoothAccumulator = 0, smoothGestureLocked = false, lastSmoothTime = 0;
+            let lastScrollTime = 0, lastScrollDir = 0, smoothAccumulator = 0, smoothGestureLocked = false, lastSmoothTime = 0, lastGestureDir = 0;
             const SMOOTH_THRESHOLD = 0.35, SMOOTH_TIMEOUT_MS = 180, WHEEL_DEBOUNCE_MS = 60;
 
             const handleScrollEvent = (_actor, event) => {
@@ -2588,28 +2668,38 @@ export default class RawClipboardExtension extends Extension {
                     smoothGestureLocked = false;
                     smoothAccumulator = 0;
                     lastSmoothTime = 0;
+                    lastGestureDir = 0;
                 }
 
                 if (direction === Clutter.ScrollDirection.UP) {
                     delta = -1;
                     smoothGestureLocked = false;
                     smoothAccumulator = 0;
+                    lastGestureDir = 0;
                 } else if (direction === Clutter.ScrollDirection.DOWN) {
                     delta = 1;
                     smoothGestureLocked = false;
                     smoothAccumulator = 0;
+                    lastGestureDir = 0;
                 } else if (direction === Clutter.ScrollDirection.SMOOTH) {
                     const [, dy] = event.get_scroll_delta();
                     if (now - lastSmoothTime > SMOOTH_TIMEOUT_MS) {
                         smoothGestureLocked = false;
                         smoothAccumulator = 0;
+                        lastGestureDir = 0;
                     }
                     lastSmoothTime = now;
 
                     const currentSign = dy > 0.05 ? 1 : (dy < -0.05 ? -1 : 0);
-                    if (currentSign !== 0 && lastScrollDir !== 0 && currentSign !== lastScrollDir) {
-                        smoothGestureLocked = false;
-                        smoothAccumulator = 0;
+                    if (currentSign !== 0) {
+                        if (lastScrollDir !== 0 && currentSign !== lastScrollDir) {
+                            smoothGestureLocked = false;
+                            lastScrollDir = 0;
+                        }
+                        if (lastGestureDir !== 0 && currentSign !== lastGestureDir) {
+                            smoothAccumulator = 0;
+                        }
+                        lastGestureDir = currentSign;
                     }
 
                     if (smoothGestureLocked) return Clutter.EVENT_STOP;
@@ -2619,10 +2709,12 @@ export default class RawClipboardExtension extends Extension {
                         delta = 1;
                         smoothAccumulator = 0;
                         smoothGestureLocked = true;
+                        lastGestureDir = 0;
                     } else if (smoothAccumulator <= -SMOOTH_THRESHOLD) {
                         delta = -1;
                         smoothAccumulator = 0;
                         smoothGestureLocked = true;
+                        lastGestureDir = 0;
                     } else {
                         return Clutter.EVENT_STOP;
                     }
@@ -3148,14 +3240,15 @@ export default class RawClipboardExtension extends Extension {
 
         const fmt0 = formats[0];
         slot.typeBtn0._targetMime = fmt0.mime;
-        if (entry.thumbIcon) {
-            if (slot.typeBtn0._currentGIcon !== entry.thumbIcon) {
+        const thumb = entry.thumbIcon;
+        if (thumb) {
+            if (slot.typeBtn0._currentGIcon !== thumb) {
                 slot.typeBtn0._icon.icon_name = null;
-                slot.typeBtn0._icon.gicon = entry.thumbIcon;
+                slot.typeBtn0._icon.gicon = thumb;
                 slot.typeBtn0._icon._resolvedIconName = null;
                 slot.typeBtn0._icon.style_class = 'raw-clipboard-item-thumb';
                 slot.typeBtn0._icon.icon_size = 34;
-                slot.typeBtn0._currentGIcon = entry.thumbIcon;
+                slot.typeBtn0._currentGIcon = thumb;
                 slot.typeBtn0._currentIconName = null;
             }
         } else {
@@ -3339,6 +3432,7 @@ export default class RawClipboardExtension extends Extension {
         if (symbol === Clutter.KEY_BackSpace) {
             if (this._inSearchMode) {
                 if (this._searchQuery.length > 0) {
+                    this._loopArmDirection = null;
                     if (typeof Intl !== 'undefined' && Intl.Segmenter) {
                         const segs = Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(this._searchQuery));
                         this._searchQuery = segs.length > 0 ? segs.slice(0, -1).map(s => s.segment).join('') : '';
@@ -3473,7 +3567,8 @@ export default class RawClipboardExtension extends Extension {
                 this._enterSearchMode(char);
                 return Clutter.EVENT_STOP;
             } else {
-                if (this._searchQuery.length < MAX_SEARCH_QUERY_LEN) {
+                if (this._searchQuery.length + char.length <= MAX_SEARCH_QUERY_LEN) {
+                    this._loopArmDirection = null;
                     this._searchQuery += char;
                     this._updateSearchDisplay();
                     this._currentPage = 0;
