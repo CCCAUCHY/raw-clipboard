@@ -598,6 +598,7 @@ export default class RawClipboardExtension extends Extension {
     #activeTimerIds = new Set();
     #unknownTypes = new Map();
     #previewMd5ByEntry = new WeakMap();
+    #iconCache = new Map();
 
     _currentReadCancellable = null;
     _undoStack = [];
@@ -680,10 +681,11 @@ export default class RawClipboardExtension extends Extension {
         }
         if (entry.type === 'image') return entry.mime || '';
         if (entry.type === 'files') {
-            const sub = entry.subtitle || '';
+            const match = (entry.subtitle || '').match(/(\d+\+?)\s*(?:项|items)/);
+            const countStr = match ? match[1] : '0';
             return isEn
-                ? sub.replace('文件/目录', 'Files/Folders').replace('文件夹', 'Files/Folders').replace('文件', 'Files/Folders').replace('项 (仅存路径，不读内容)', 'items (path only, no disk read)')
-                : sub.replace('Files/Folders', '文件/目录').replace('Folders', '文件/目录').replace('Files', '文件/目录').replace('items (path only, no disk read)', '项 (仅存路径，不读内容)');
+                ? `Files/Folders · ${countStr} items (path only, no disk read)`
+                : `文件/目录 · ${countStr} 项 (仅存路径，不读内容)`;
         }
         if (entry.type === 'unknown' || entry.type === 'raw') return formatByteSize(entry.size);
         return entry.subtitle || '';
@@ -1123,6 +1125,7 @@ export default class RawClipboardExtension extends Extension {
         this.#radixTree.clear();
         this.#unknownTypes.clear();
         this.#activeNonces.clear();
+        this.#iconCache.clear();
         this._isRestoring = false;
         this._settings = null;
     }
@@ -1576,19 +1579,6 @@ export default class RawClipboardExtension extends Extension {
         if (!entry) return;
         const defaultMime = (entry.type === 'composite') ? 'text/html' : (entry.formats?.[0]?.mime || entry.mime);
         this._restoreEntryFormat(entry, defaultMime);
-    }
-
-    _resolveIcon(name) {
-        const defaultName = name || ICON_RAW;
-        if (this.path) {
-            const localSvg = GLib.build_filenamev([this.path, 'icons', `${defaultName}.svg`]);
-            if (GLib.file_test(localSvg, GLib.FileTest.EXISTS)) {
-                try {
-                    return { gicon: Gio.icon_new_for_string(localSvg), iconName: defaultName };
-                } catch {}
-            }
-        }
-        return { gicon: null, iconName: defaultName };
     }
 
     _getAvailableConversions(entry) {
@@ -2224,13 +2214,12 @@ export default class RawClipboardExtension extends Extension {
         const createMenuItem = (iconName, labelText, onActivate) => {
             const box = new St.BoxLayout({ orientation: Clutter.Orientation.HORIZONTAL, y_align: Clutter.ActorAlign.CENTER, x_expand: true });
             const { gicon, iconName: resolvedName } = this._resolveIcon(iconName);
-            const iconProps = { style_class: 'raw-clipboard-menu-item-icon', icon_size: 16, y_align: Clutter.ActorAlign.CENTER };
-            if (gicon) {
-                iconProps.gicon = gicon;
-            } else {
-                iconProps.icon_name = resolvedName;
-            }
-            const icon = new St.Icon(iconProps);
+            const icon = new St.Icon({
+                style_class: 'raw-clipboard-menu-item-icon',
+                icon_size: 16,
+                y_align: Clutter.ActorAlign.CENTER,
+                ...(gicon ? { gicon } : { icon_name: resolvedName }),
+            });
             icon._resolvedIconName = resolvedName;
             const label = new St.Label({ text: labelText, style_class: 'raw-clipboard-menu-item-label', y_align: Clutter.ActorAlign.CENTER });
             if (label.clutter_text) label.clutter_text.use_markup = false;
@@ -2319,12 +2308,16 @@ export default class RawClipboardExtension extends Extension {
             for (const slot of this._itemSlots) {
                 if (slot) {
                     slot.currentEntry = null;
-                    slot.currentGIcon = null;
-                    slot.currentIconName = null;
-                    slot.currentGIcon1 = null;
-                    slot.currentIconName1 = null;
-                    if (slot.typeBtn0) slot.typeBtn0._targetMime = null;
-                    if (slot.typeBtn1) slot.typeBtn1._targetMime = null;
+                    if (slot.typeBtn0) {
+                        slot.typeBtn0._targetMime = null;
+                        slot.typeBtn0._currentGIcon = null;
+                        slot.typeBtn0._currentIconName = null;
+                    }
+                    if (slot.typeBtn1) {
+                        slot.typeBtn1._targetMime = null;
+                        slot.typeBtn1._currentGIcon = null;
+                        slot.typeBtn1._currentIconName = null;
+                    }
                     try { slot.itemBox.destroy(); } catch {}
                     slot.itemBox = null;
                     slot.iconBox = null;
@@ -2478,6 +2471,8 @@ export default class RawClipboardExtension extends Extension {
             btn.height = 48;
             btn._icon = icon;
             btn._targetMime = null;
+            btn._currentGIcon = null;
+            btn._currentIconName = null;
 
             btn.connect('button-press-event', (_actor, event) => {
                 if (event.get_button() === 1) {
@@ -2557,10 +2552,6 @@ export default class RawClipboardExtension extends Extension {
             timeLabel,
             deleteBtn,
             currentEntry: null,
-            currentGIcon: null,
-            currentIconName: null,
-            currentGIcon1: null,
-            currentIconName1: null,
         };
 
         const triggerDelete = () => {
@@ -2603,6 +2594,39 @@ export default class RawClipboardExtension extends Extension {
         return slot;
     }
 
+    _resolveIcon(name) {
+        const defaultName = name || ICON_RAW;
+        if (this.#iconCache.has(defaultName)) return this.#iconCache.get(defaultName);
+        let res = { gicon: null, iconName: defaultName };
+        if (this.path) {
+            const localSvg = GLib.build_filenamev([this.path, 'icons', `${defaultName}.svg`]);
+            if (GLib.file_test(localSvg, GLib.FileTest.EXISTS)) {
+                try {
+                    res = { gicon: Gio.icon_new_for_string(localSvg), iconName: defaultName };
+                } catch {}
+            }
+        }
+        this.#iconCache.set(defaultName, res);
+        return res;
+    }
+
+    _applyButtonIcon(btn, name, iconSize = 20) {
+        const { gicon, iconName } = this._resolveIcon(name);
+        if (btn._currentIconName === iconName && btn._currentGIcon === gicon) return;
+        btn._icon._resolvedIconName = iconName;
+        if (gicon) {
+            btn._icon.icon_name = null;
+            btn._icon.gicon = gicon;
+        } else {
+            btn._icon.gicon = null;
+            btn._icon.icon_name = iconName;
+        }
+        btn._icon.style_class = 'raw-clipboard-item-icon';
+        btn._icon.icon_size = iconSize;
+        btn._currentIconName = iconName;
+        btn._currentGIcon = gicon;
+    }
+
     _applySlotIcon(slot) {
         const entry = slot.currentEntry;
         if (!entry) return;
@@ -2610,58 +2634,30 @@ export default class RawClipboardExtension extends Extension {
         const formats = (entry.formats && entry.formats.length > 0) ? entry.formats : [{
             mime: entry.mime,
             type: entry.type,
-            icon: entry.icon || 'edit-copy-symbolic',
+            icon: entry.icon || ICON_RAW,
         }];
 
         const fmt0 = formats[0];
         slot.typeBtn0._targetMime = fmt0.mime;
         if (entry.thumbIcon) {
-            if (slot.currentGIcon !== entry.thumbIcon) {
+            if (slot.typeBtn0._currentGIcon !== entry.thumbIcon) {
                 slot.typeBtn0._icon.icon_name = null;
                 slot.typeBtn0._icon.gicon = entry.thumbIcon;
                 slot.typeBtn0._icon._resolvedIconName = null;
                 slot.typeBtn0._icon.style_class = 'raw-clipboard-item-thumb';
                 slot.typeBtn0._icon.icon_size = 34;
-                slot.currentGIcon = entry.thumbIcon;
-                slot.currentIconName = null;
+                slot.typeBtn0._currentGIcon = entry.thumbIcon;
+                slot.typeBtn0._currentIconName = null;
             }
         } else {
-            const { gicon, iconName } = this._resolveIcon(fmt0.icon || entry.icon);
-            if (slot.currentIconName !== iconName || slot.currentGIcon !== gicon) {
-                slot.typeBtn0._icon._resolvedIconName = iconName;
-                if (gicon) {
-                    slot.typeBtn0._icon.icon_name = null;
-                    slot.typeBtn0._icon.gicon = gicon;
-                } else {
-                    slot.typeBtn0._icon.gicon = null;
-                    slot.typeBtn0._icon.icon_name = iconName;
-                }
-                slot.typeBtn0._icon.style_class = 'raw-clipboard-item-icon';
-                slot.typeBtn0._icon.icon_size = 20;
-                slot.currentIconName = iconName;
-                slot.currentGIcon = gicon;
-            }
+            this._applyButtonIcon(slot.typeBtn0, fmt0.icon || entry.icon, 20);
         }
         slot.typeBtn0.show();
 
         if (formats.length > 1) {
             const fmt1 = formats[1];
             slot.typeBtn1._targetMime = fmt1.mime;
-            const { gicon: gicon1, iconName: iconName1 } = this._resolveIcon(fmt1.icon);
-            if (slot.currentIconName1 !== iconName1 || slot.currentGIcon1 !== gicon1) {
-                slot.typeBtn1._icon._resolvedIconName = iconName1;
-                if (gicon1) {
-                    slot.typeBtn1._icon.icon_name = null;
-                    slot.typeBtn1._icon.gicon = gicon1;
-                } else {
-                    slot.typeBtn1._icon.gicon = null;
-                    slot.typeBtn1._icon.icon_name = iconName1;
-                }
-                slot.typeBtn1._icon.style_class = 'raw-clipboard-item-icon';
-                slot.typeBtn1._icon.icon_size = 20;
-                slot.currentIconName1 = iconName1;
-                slot.currentGIcon1 = gicon1;
-            }
+            this._applyButtonIcon(slot.typeBtn1, fmt1.icon, 20);
             slot.typeBtn1.show();
         } else {
             slot.typeBtn1._targetMime = null;
