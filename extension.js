@@ -496,20 +496,68 @@ export function isFileCutOperation(gBytes) {
     } catch { return false; }
 }
 
+export function safeSlice(str, maxLen) {
+    if (!str || str.length <= maxLen) return str;
+    let end = maxLen;
+    const code = str.charCodeAt(end - 1);
+    if (code >= 0xD800 && code <= 0xDBFF) {
+        end--;
+    }
+    return str.slice(0, end);
+}
+
+export function getTrailingIncompleteUtf8Bytes(data) {
+    const len = data.length;
+    if (len === 0) return 0;
+    for (let i = 1; i <= Math.min(len, 3); i++) {
+        const byte = data[len - i];
+        if ((byte & 0x80) === 0) return 0;
+        if ((byte & 0xC0) === 0xC0) {
+            let expectedLen = 0;
+            if ((byte & 0xE0) === 0xC0) expectedLen = 2;
+            else if ((byte & 0xF0) === 0xE0) expectedLen = 3;
+            else if ((byte & 0xF8) === 0xF0) expectedLen = 4;
+            if (expectedLen > i) return i;
+            return 0;
+        }
+    }
+    return 0;
+}
+
 export function extractTextPreview(gBytes, isHtml = false) {
     if (!gBytes || gBytes.get_size() === 0) return '';
     try {
         const stream = Gio.MemoryInputStream.new_from_bytes(gBytes);
         const CHUNK_SIZE = 64 * 1024;
         let text = '', clean = '';
+        let carry = null;
         for (let attempt = 0; attempt < 10; attempt++) {
             const chunk = stream.read_bytes(CHUNK_SIZE, null);
             if (!chunk || chunk.get_size() === 0) break;
-            const data = chunk.get_data ? chunk.get_data() : (chunk.toArray ? chunk.toArray() : chunk);
-            text += Utf8Decoder.decode(data);
+            let data = chunk.get_data ? chunk.get_data() : (chunk.toArray ? chunk.toArray() : chunk);
+            if (carry && carry.length > 0) {
+                const combined = new Uint8Array(carry.length + data.length);
+                combined.set(carry, 0);
+                combined.set(data, carry.length);
+                data = combined;
+                carry = null;
+            }
+            const incompleteLen = getTrailingIncompleteUtf8Bytes(data);
+            if (incompleteLen > 0) {
+                carry = data.slice(data.length - incompleteLen);
+                data = data.subarray(0, data.length - incompleteLen);
+            }
+            if (data.length > 0) {
+                text += Utf8Decoder.decode(data);
+            }
             const raw = isHtml ? text.replace(/<[^>]+>/g, ' ') : text;
             clean = raw.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').replace(/\s+/g, ' ').trim();
             if (clean) break;
+        }
+        if (!clean && carry && carry.length > 0) {
+            text += Utf8Decoder.decode(carry);
+            const raw = isHtml ? text.replace(/<[^>]+>/g, ' ') : text;
+            clean = raw.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').replace(/\s+/g, ' ').trim();
         }
         return clean;
     } catch { return ''; }
@@ -610,7 +658,7 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
             if (htmlPart) clean = extractTextPreview(htmlPart, true);
         }
         return {
-            title: clean.length > 1000 ? `${clean.slice(0, 1000)}…` : (clean || (isEn ? '(Empty text)' : '(空文本)')),
+            title: clean.length > 1000 ? `${safeSlice(clean, 1000)}…` : (clean || (isEn ? '(Empty text)' : '(空文本)')),
             subtitle: `${isEn ? 'Multi-type' : '多类型'} · ${sizeStr}`,
             icon: ICON_HTML,
         };
@@ -619,7 +667,7 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
     if (type === 'text' || type === 'html') {
         const clean = extractTextPreview(gBytes, false);
         return {
-            title: clean.length > 1000 ? `${clean.slice(0, 1000)}…` : (clean || (isEn ? '(Empty text)' : '(空文本)')),
+            title: clean.length > 1000 ? `${safeSlice(clean, 1000)}…` : (clean || (isEn ? '(Empty text)' : '(空文本)')),
             subtitle: `${type === 'html' ? (isEn ? 'HTML' : '富文本') : (isEn ? 'Text' : '文本')} · ${sizeStr}`,
             icon: type === 'html' ? ICON_HTML : ICON_TEXT,
         };
@@ -628,32 +676,15 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
     if (type === 'files') {
         try {
             const stream = Gio.MemoryInputStream.new_from_bytes(gBytes);
-            const chunk = stream.read_bytes(4096, null);
-            const text = Utf8Decoder.decode(chunk);
-            const lines = text.split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#') && l !== 'copy' && l !== 'cut');
-            if (lines.length === 0) {
-                return {
-                    title: isEn ? 'File List' : '文件列表',
-                    subtitle: isEn ? 'Files/Folders · 0 items (path only, no disk read)' : '文件/目录 · 0 项 (仅存路径，不读内容)',
-                    icon: ICON_FILES,
-                    fileCountStr: '0',
-                };
-            }
-            let totalCount = lines.length, isCapped = false;
-            if (gBytes.get_size() > 4096) {
-                let next, scanned = 0;
-                while (totalCount < 500 && scanned < 65536 && (next = stream.read_bytes(16384, null)) && next.get_size() > 0) {
-                    scanned += next.get_size();
-                    const d = next.get_data();
-                    for (let i = 0; i < d.length; i++) {
-                        if (d[i] === 10) {
-                            totalCount++;
-                            if (totalCount >= 500) { isCapped = true; break; }
-                        }
-                    }
-                }
-                if (scanned >= 65536) isCapped = true;
-            }
+            const MAX_SCAN_BYTES = 64 * 1024;
+            const MAX_SCAN_ITEMS = 500;
+            const CHUNK_SIZE = 16 * 1024;
+
+            let totalCount = 0;
+            let dirCount = 0;
+            let isCapped = false;
+            let name1 = null;
+            let name2 = null;
 
             const safeDecode = s => { try { return decodeURIComponent(s); } catch { return s; } };
             const parseName = uri => {
@@ -663,18 +694,87 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
                 return safeDecode(last >= 0 ? clean.slice(last + 1) : clean);
             };
 
-            const name1 = parseName(lines[0]);
-            const name2 = lines.length > 1 ? parseName(lines[1]) : null;
-            let dirCount = 0;
-            for (const l of lines) { if (l.endsWith('/') || l.endsWith('\\')) dirCount++; }
+            const processLine = rawLine => {
+                const l = rawLine.trim();
+                if (!l || l.startsWith('#') || l === 'copy' || l === 'cut') return;
+                totalCount++;
+                if (!name1) name1 = parseName(l);
+                else if (!name2) name2 = parseName(l);
+                if (l.endsWith('/') || l.endsWith('\\')) dirCount++;
+            };
 
+            let remainder = '';
+            let scannedBytes = 0;
+            let carryBytes = null;
+
+            while (scannedBytes < MAX_SCAN_BYTES && totalCount < MAX_SCAN_ITEMS) {
+                const chunk = stream.read_bytes(CHUNK_SIZE, null);
+                if (!chunk || chunk.get_size() === 0) break;
+                scannedBytes += chunk.get_size();
+
+                let data = chunk.get_data ? chunk.get_data() : (chunk.toArray ? chunk.toArray() : chunk);
+                if (carryBytes && carryBytes.length > 0) {
+                    const combined = new Uint8Array(carryBytes.length + data.length);
+                    combined.set(carryBytes, 0);
+                    combined.set(data, carryBytes.length);
+                    data = combined;
+                    carryBytes = null;
+                }
+
+                const incompleteLen = getTrailingIncompleteUtf8Bytes(data);
+                if (incompleteLen > 0) {
+                    carryBytes = data.slice(data.length - incompleteLen);
+                    data = data.subarray(0, data.length - incompleteLen);
+                }
+
+                const textChunk = data.length > 0 ? Utf8Decoder.decode(data) : '';
+                const combinedText = remainder + textChunk;
+                const lastNl = combinedText.lastIndexOf('\n');
+
+                if (lastNl >= 0) {
+                    const fullLines = combinedText.slice(0, lastNl).split('\n');
+                    remainder = combinedText.slice(lastNl + 1);
+                    for (const line of fullLines) {
+                        processLine(line);
+                        if (totalCount >= MAX_SCAN_ITEMS) {
+                            isCapped = true;
+                            break;
+                        }
+                    }
+                } else {
+                    remainder = combinedText;
+                }
+            }
+
+            if (scannedBytes >= MAX_SCAN_BYTES || gBytes.get_size() > MAX_SCAN_BYTES) {
+                isCapped = true;
+            } else if (!isCapped && remainder.length > 0) {
+                processLine(remainder);
+            }
+
+            if (totalCount === 0) {
+                return {
+                    title: isEn ? 'File List' : '文件列表',
+                    subtitle: isEn ? 'Files/Folders · 0 items (path only, no disk read)' : '文件/目录 · 0 项 (仅存路径，不读内容)',
+                    icon: ICON_FILES,
+                    fileCountStr: '0',
+                };
+            }
+
+            const countStr = isCapped ? `${totalCount}+` : `${totalCount}`;
             const isAllDir = dirCount === totalCount;
             const isMixed = dirCount > 0 && !isAllDir;
             const label = isEn ? 'Files/Folders' : '文件/目录';
-            const countStr = isCapped ? `${totalCount}+` : `${totalCount}`;
-            const suffix = isAllDir ? (isEn ? `and ${countStr} folders` : `等 ${countStr} 个文件夹`) : (isMixed ? (isEn ? `and ${countStr} items` : `等 ${countStr} 项`) : (isEn ? `and ${countStr} files` : `等 ${countStr} 个文件`));
+            const suffix = isAllDir
+                ? (isEn ? `and ${countStr} folders` : `等 ${countStr} 个文件夹`)
+                : (isMixed
+                    ? (isEn ? `and ${countStr} items` : `等 ${countStr} 项`)
+                    : (isEn ? `and ${countStr} files` : `等 ${countStr} 个文件`));
 
-            const title = totalCount === 1 ? name1 : (totalCount === 2 ? `${name1}, ${name2}` : `${name1}, ${name2} ${suffix}`);
+            const title = totalCount === 1
+                ? (name1 || (isEn ? 'File List' : '文件列表'))
+                : (totalCount === 2 ? `${name1}, ${name2}` : `${name1}, ${name2} ${suffix}`);
+
             return {
                 title,
                 subtitle: isEn ? `${label} · ${countStr} items (path only, no disk read)` : `${label} · ${countStr} 项 (仅存路径，不读内容)`,
@@ -684,8 +784,9 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
         } catch {
             return {
                 title: isEn ? `File List (${sizeStr})` : `文件列表 (${sizeStr})`,
-                subtitle: mime,
+                subtitle: isEn ? 'Files/Folders · (path only, no disk read)' : '文件/目录 · (仅存路径，不读内容)',
                 icon: ICON_FILES,
+                fileCountStr: null,
             };
         }
     }
@@ -700,7 +801,7 @@ export function generatePreview(type, mime, gBytes, unknownTypeName = null, lang
 
     const tag = mime || unknownTypeName || (isEn ? 'Unknown Type' : '未知类型');
     return {
-        title: tag.length > 200 ? `${tag.slice(0, 200)}…` : tag,
+        title: tag.length > 200 ? `${safeSlice(tag, 200)}…` : tag,
         subtitle: sizeStr,
         icon: ICON_RAW,
     };
@@ -801,14 +902,15 @@ export default class RawClipboardExtension extends Extension {
         }
         if (entry.type === 'image') return entry.mime || '';
         if (entry.type === 'files') {
-            let countStr = entry.fileCountStr;
-            if (!countStr) {
-                const match = (entry.subtitle || '').match(/(\d+\+?)\s*(?:项|items)/);
-                countStr = match ? match[1] : '0';
+            const countStr = entry.fileCountStr;
+            if (countStr !== null && countStr !== undefined) {
+                return isEn
+                    ? `Files/Folders · ${countStr} items (path only, no disk read)`
+                    : `文件/目录 · ${countStr} 项 (仅存路径，不读内容)`;
             }
             return isEn
-                ? `Files/Folders · ${countStr} items (path only, no disk read)`
-                : `文件/目录 · ${countStr} 项 (仅存路径，不读内容)`;
+                ? 'Files/Folders · (path only, no disk read)'
+                : '文件/目录 · (仅存路径，不读内容)';
         }
         if (entry.type === 'unknown' || entry.type === 'raw') return formatByteSize(entry.size);
         return entry.subtitle || '';

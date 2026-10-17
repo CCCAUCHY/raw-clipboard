@@ -257,6 +257,10 @@ const {
     unpackCompositeBytes,
     detectCoreMime,
     callAsync,
+    extractTextPreview,
+    generatePreview,
+    safeSlice,
+    getTrailingIncompleteUtf8Bytes,
 } = extModule;
 
 // ============================================================================
@@ -5254,6 +5258,177 @@ await reporter.run('13.8 搜索框 BackSpace 删除非 BMP 字符 (Unicode Emoji
 
     ext._closePopup();
     ext.disable();
+});
+
+// ============================================================================
+// [测试套件 17] 17. 文本预览跨块 UTF-8 解码、大文件列表精确计数与代理对安全截断深度测试
+// ============================================================================
+reporter.suite('17. 文本预览跨块 UTF-8 解码、大文件列表精确计数与代理对安全截断深度测试');
+
+await reporter.run('17.1 64 KiB 分块边界跨块 UTF-8 多字节字符完整解码测试 (65535 空格 + “中ab” 跨块零丢失、零字符替换)', async () => {
+    // 构造 65535 个空格 + '中ab' (0xE4, 0xB8, 0xAD, 0x61, 0x62)
+    // 首块 65536 字节刚好切在 '中' 的首字节 0xE4 之后，剩余 0xB8 0xAD 在第二块
+    const buf = new Uint8Array(65535 + 5);
+    buf.fill(0x20, 0, 65535);
+    buf[65535] = 0xE4;
+    buf[65536] = 0xB8;
+    buf[65537] = 0xAD;
+    buf[65538] = 0x61;
+    buf[65539] = 0x62;
+
+    const gBytes = new GLib.Bytes(buf);
+    const preview = extractTextPreview(gBytes, false);
+    assert(preview === '中ab', `跨 64 KiB 边界的 UTF-8 中文字符应完整解码为 '中ab'，实际: '${preview}'`);
+});
+
+await reporter.run('17.2 64 KiB 分块边界跨块 4 字节 Emoji 与 2 字节字符解码测试 (65535 空格 + “🎉hello” 与 “étest”)', async () => {
+    // 1. 4 字节 Emoji: 🎉 is 0xF0, 0x9F, 0x8E, 0x89
+    // 首块切在 0xF0 处
+    const bufEmoji = new Uint8Array(65535 + 9);
+    bufEmoji.fill(0x20, 0, 65535);
+    bufEmoji[65535] = 0xF0;
+    bufEmoji[65536] = 0x9F;
+    bufEmoji[65537] = 0x8E;
+    bufEmoji[65538] = 0x89;
+    const helloBytes = new TextEncoder().encode('hello');
+    bufEmoji.set(helloBytes, 65539);
+
+    const previewEmoji = extractTextPreview(new GLib.Bytes(bufEmoji), false);
+    assert(previewEmoji === '🎉hello', `跨 64 KiB 边界的 4 字节 Emoji 应完整解码为 '🎉hello'，实际: '${previewEmoji}'`);
+
+    // 2. 2 字节字符: é is 0xC3, 0xA9
+    const buf2 = new Uint8Array(65535 + 6);
+    buf2.fill(0x20, 0, 65535);
+    buf2[65535] = 0xC3;
+    buf2[65536] = 0xA9;
+    const testBytes = new TextEncoder().encode('test');
+    buf2.set(testBytes, 65537);
+
+    const preview2 = extractTextPreview(new GLib.Bytes(buf2), false);
+    assert(preview2 === 'étest', `跨 64 KiB 边界的 2 字节字符应完整解码为 'étest'，实际: '${preview2}'`);
+});
+
+await reporter.run('17.3 大于 4 KiB 的文件列表按行缓冲扫描与准确计数测试 (61 个纯文件精确识别 61 项、等 61 个文件，绝不误判 62 项或混合类型)', async () => {
+    // 生成 61 个文件路径，每个大约 75 字节，总大小 > 4500 字节 (> 4 KiB)
+    const lines = [];
+    for (let i = 1; i <= 61; i++) {
+        lines.push(`file:///home/user/documents/projects/deepmind/source_code_file_${i.toString().padStart(3, '0')}.txt`);
+    }
+    const payload = lines.join('\n') + '\n';
+    const gBytes = new GLib.Bytes(new TextEncoder().encode(payload));
+    assert(gBytes.get_size() > 4096, `测试数据大小 (${gBytes.get_size()} 字节) 必须 > 4096 字节`);
+
+    const preview = generatePreview('files', 'text/uri-list', gBytes, null, 'zh-CN');
+    assert(preview.fileCountStr === '61', `fileCountStr 必须精确为 '61'，实际: '${preview.fileCountStr}'`);
+    assert(preview.subtitle.includes('61 项'), `副标题必须包含 '61 项'，实际: '${preview.subtitle}'`);
+    assert(preview.title.includes('等 61 个文件'), `纯文件列表标题必须包含 '等 61 个文件' (绝不可误判为等 62 项)，实际: '${preview.title}'`);
+});
+
+await reporter.run('17.4 大于 4 KiB 的全目录列表与混合列表全量扫描测试 (61 个目录识别为等 61 个文件夹，60 文件+1 目录识别为等 61 项)', async () => {
+    // 1. 全目录列表 (以 / 结尾)
+    const dirLines = [];
+    for (let i = 1; i <= 61; i++) {
+        dirLines.push(`file:///home/user/documents/projects/deepmind/subfolder_directory_${i.toString().padStart(3, '0')}/`);
+    }
+    const dirBytes = new GLib.Bytes(new TextEncoder().encode(dirLines.join('\n') + '\n'));
+    assert(dirBytes.get_size() > 4096, '全目录测试数据 > 4096 字节');
+
+    const dirPreview = generatePreview('files', 'text/uri-list', dirBytes, null, 'zh-CN');
+    assert(dirPreview.fileCountStr === '61', `全目录数量为 '61'，实际: '${dirPreview.fileCountStr}'`);
+    assert(dirPreview.title.includes('等 61 个文件夹'), `全目录标题必须显示 '等 61 个文件夹'，实际: '${dirPreview.title}'`);
+
+    // 2. 混合列表 (60 文件 + 1 目录)
+    const mixedLines = dirLines.slice(0, 1).concat(dirLines.slice(1).map(l => l.slice(0, -1)));
+    const mixedBytes = new GLib.Bytes(new TextEncoder().encode(mixedLines.join('\n') + '\n'));
+    assert(mixedBytes.get_size() > 4096, '混合测试数据 > 4096 字节');
+
+    const mixedPreview = generatePreview('files', 'text/uri-list', mixedBytes, null, 'zh-CN');
+    assert(mixedPreview.fileCountStr === '61', `混合数量为 '61'，实际: '${mixedPreview.fileCountStr}'`);
+    assert(mixedPreview.title.includes('等 61 项'), `混合类型标题必须显示 '等 61 项'，实际: '${mixedPreview.title}'`);
+});
+
+await reporter.run('17.5 文件列表跨 16 KiB 块边界截断行测试 (路径在块边界被切半时不产生重复行，不把中间包含斜杠的截断行当成目录)', async () => {
+    // 1. 跨 16 KiB 块边界但未达到 500 项上限 (250 项，约 19 KiB)
+    const linePrefix = 'file:///home/user/long_directory_structure_path_for_testing/item_';
+    const lines = [];
+    for (let i = 1; i <= 250; i++) {
+        lines.push(`${linePrefix}${i.toString().padStart(4, '0')}.dat`);
+    }
+    const gBytes250 = new GLib.Bytes(new TextEncoder().encode(lines.join('\n') + '\n'));
+    assert(gBytes250.get_size() > 16384, `测试数据大小 (${gBytes250.get_size()} 字节) 必须 > 16384 字节`);
+
+    const preview250 = generatePreview('files', 'text/uri-list', gBytes250, null, 'zh-CN');
+    assert(preview250.fileCountStr === '250', `跨 16 KiB 边界的文件列表计数必须精确为 250，实际: '${preview250.fileCountStr}'`);
+    assert(preview250.title.includes('等 250 个文件'), `标题必须正确识别为纯文件，实际: '${preview250.title}'`);
+
+    // 2. 超过 500 项上限时触发 500+ 上限标记
+    const bigLines = [];
+    for (let i = 1; i <= 600; i++) {
+        bigLines.push(`${linePrefix}${i.toString().padStart(4, '0')}.dat`);
+    }
+    const gBytes600 = new GLib.Bytes(new TextEncoder().encode(bigLines.join('\n') + '\n'));
+    const preview600 = generatePreview('files', 'text/uri-list', gBytes600, null, 'zh-CN');
+    assert(preview600.fileCountStr === '500+', `超过 500 项时应标记为 '500+'，实际: '${preview600.fileCountStr}'`);
+    assert(preview600.title.includes('等 500+ 个文件'), `超过 500 项时标题应包含 '等 500+ 个文件'，实际: '${preview600.title}'`);
+});
+
+await reporter.run('17.6 文件列表解析异常走 catch fallback 时副标题不显示 0 项且消除正则反解测试', async () => {
+    const ext = new RawClipboardExtension({ uuid: 'raw-clipboard@local' });
+    ext.enable();
+
+    // 1. 模拟正常 entry (带有 fileCountStr: '5')
+    const normalEntry = {
+        type: 'files',
+        size: 512,
+        fileCountStr: '5',
+        subtitle: '文件/目录 · 5 项 (仅存路径，不读内容)',
+    };
+    assert(ext._getEntrySubtitle(normalEntry) === '文件/目录 · 5 项 (仅存路径，不读内容)', '正常条目副标题显示 5 项');
+
+    // 2. 模拟 fallback entry (解析失败，fileCountStr 为 null)
+    const fallbackEntry = {
+        type: 'files',
+        size: 1024,
+        fileCountStr: null,
+        subtitle: '文件/目录 · (仅存路径，不读内容)',
+    };
+    const subZh = ext._getEntrySubtitle(fallbackEntry);
+    assert(subZh === '文件/目录 · (仅存路径，不读内容)', `fallback 条目副标题绝不可显示 0 项，实际: '${subZh}'`);
+
+    // 3. 英文切换下的 fallback
+    ext._settings.set_string('ui-language', 'en-US');
+    const subEn = ext._getEntrySubtitle(fallbackEntry);
+    assert(subEn === 'Files/Folders · (path only, no disk read)', `英文 fallback 副标题实际: '${subEn}'`);
+
+    const normalEn = ext._getEntrySubtitle(normalEntry);
+    assert(normalEn === 'Files/Folders · 5 items (path only, no disk read)', `英文 normal 副标题实际: '${normalEn}'`);
+
+    ext._settings.set_string('ui-language', 'zh-CN');
+    ext.disable();
+});
+
+await reporter.run('17.7 Unicode 代理对安全截断测试 (safeSlice 截断 1000 字符边界处 Emoji 不撕裂，不产生孤立代理对与无效码元)', async () => {
+    // 构造在第 1000 字符处跨越代理对的字符串: 999 个 'a' + '😃' + 'b'
+    // '😃' 的 UTF-16 编码是 \uD83D\uDE03 (长度为 2)
+    const str1 = 'a'.repeat(999) + '😃' + 'b';
+    assert(str1.length === 1002, 'str1 length is 1002');
+    const sliced1 = safeSlice(str1, 1000);
+    assert(sliced1.length === 999, `截断必须退避高代理项，长度应为 999，实际: ${sliced1.length}`);
+    assert(sliced1 === 'a'.repeat(999), '截断结果应为 999 个 a，杜绝孤立高代理项 \\uD83D');
+    assert(!sliced1.includes('\uD83D'), '截断结果绝不可包含孤立的高代理项');
+
+    // 构造在第 999 字符处跨越代理对的字符串: 998 个 'a' + '😃' + 'b'
+    // '😃' 位于 [998, 999]，完整落在 1000 字符之内
+    const str2 = 'a'.repeat(998) + '😃' + 'b';
+    assert(str2.length === 1001, 'str2 length is 1001');
+    const sliced2 = safeSlice(str2, 1000);
+    assert(sliced2.length === 1000, `截断包含完整 Emoji，长度应为 1000，实际: ${sliced2.length}`);
+    assert(sliced2.endsWith('😃'), '截断结果应完整保留 Emoji 😃');
+
+    // 测试 generatePreview 对超长 text 的代理对安全截断
+    const textBytes = new GLib.Bytes(new TextEncoder().encode(str1));
+    const preview = generatePreview('text', 'text/plain', textBytes, null, 'zh-CN');
+    assert(preview.title === `${'a'.repeat(999)}…`, `预览标题必须安全截断并加省略号，实际: '${preview.title}'`);
 });
 
 // ============================================================================
