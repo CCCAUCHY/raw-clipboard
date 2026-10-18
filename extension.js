@@ -504,8 +504,57 @@ export function detectCoreMime(mimeTypes) {
     }
 
     // 3. 复合类型与文本/HTML
-    const htmlCandidates = findRawCandidates(['text/html']);
-    const textCandidates = findRawCandidates(['text/plain', 'utf8_string', 'string', 'text']);
+    // 文本候选流优先级严格遵循 GNOME Shell / Mutter 原生 supported_mimetypes 规范：
+    // 1. text/plain;charset=utf-8 / utf8 (显式声明 utf-8 的纯文本，杜绝被服务端转码为 ASCII/转义序列)
+    // 2. UTF8_STRING (X11 / GTK 原生 utf-8 字符串 atom)
+    // 3. text/plain (裸文本，可能缺失 charset 声明)
+    // 4. TEXT (通用文本)
+    // 5. text/plain;charset=... (其它编码纯文本)
+    // 6. STRING (X11 Latin-1 兜底，放最后杜绝中文被降级转义)
+    // 7. 其它 text/* MIME
+    const getTextTier = (raw, base) => {
+        const lower = raw.trim().toLowerCase();
+        if (base === 'text/plain') {
+            if (lower.includes('charset=utf-8') || lower.includes('charset=utf8')) return 1;
+            if (lower === 'text/plain') return 3;
+            return 5;
+        }
+        if (base === 'utf8_string') return 2;
+        if (base === 'text') return 4;
+        if (base === 'string') return 6;
+        if (base.startsWith('text/') && base !== 'text/html' && base !== 'text/uri-list') return 7;
+        return 99;
+    };
+
+    const textEntries = entries
+        .map(e => ({ raw: e.raw, base: e.base, tier: getTextTier(e.raw, e.base) }))
+        .filter(e => e.tier < 99)
+        .sort((a, b) => a.tier - b.tier);
+
+    const textCandidates = [];
+    for (const item of textEntries) {
+        if (!textCandidates.includes(item.raw)) textCandidates.push(item.raw);
+    }
+
+    const getHtmlTier = (raw, base) => {
+        const lower = raw.trim().toLowerCase();
+        if (base === 'text/html') {
+            if (lower.includes('charset=utf-8') || lower.includes('charset=utf8')) return 1;
+            if (lower === 'text/html') return 2;
+            return 3;
+        }
+        return 99;
+    };
+
+    const htmlEntries = entries
+        .map(e => ({ raw: e.raw, base: e.base, tier: getHtmlTier(e.raw, e.base) }))
+        .filter(e => e.tier < 99)
+        .sort((a, b) => a.tier - b.tier);
+
+    const htmlCandidates = [];
+    for (const item of htmlEntries) {
+        if (!htmlCandidates.includes(item.raw)) htmlCandidates.push(item.raw);
+    }
 
     if (htmlCandidates.length > 0 && textCandidates.length > 0) {
         return {
@@ -595,6 +644,44 @@ export function getTrailingIncompleteUtf8Bytes(data) {
     return 0;
 }
 
+export function decodeEscapedPreviewText(str) {
+    if (!str || typeof str !== 'string' || !str.includes('\\')) return str;
+
+    let res = str;
+
+    // 1. Unicode 转义序列解码: \uXXXX (如 \u6545\u4e8b -> 故事)
+    if (/\\u[0-9a-fA-F]{4}/i.test(res)) {
+        res = res.replace(/\\u([0-9a-fA-F]{4})/gi, (_, hex) => {
+            try {
+                return String.fromCharCode(parseInt(hex, 16));
+            } catch {
+                return _;
+            }
+        });
+    }
+
+    // 2. 字节级十六进制转义序列解码: \E6\95\85 或 \xE6\x95\x85 (如 \E6\95\85\E4\BA\8B -> 故事)
+    if (/\\(?:x|X)?[0-9a-fA-F]{2}/i.test(res)) {
+        res = res.replace(/(?:\\(?:x|X)?([0-9a-fA-F]{2}))+/gi, (match) => {
+            const hexPairs = [];
+            const regex = /\\(?:x|X)?([0-9a-fA-F]{2})/gi;
+            let m;
+            while ((m = regex.exec(match)) !== null) {
+                hexPairs.push(parseInt(m[1], 16));
+            }
+            try {
+                const u8 = new Uint8Array(hexPairs);
+                const decoded = Utf8Decoder.decode(u8);
+                return (decoded && !decoded.includes('\uFFFD')) ? decoded : match;
+            } catch {
+                return match;
+            }
+        });
+    }
+
+    return res;
+}
+
 export function extractTextPreview(gBytes, isHtml = false) {
     if (!gBytes || gBytes.get_size() === 0) return '';
     try {
@@ -629,6 +716,9 @@ export function extractTextPreview(gBytes, isHtml = false) {
             text += Utf8Decoder.decode(carry);
             const raw = isHtml ? text.replace(/<[^>]+>/g, ' ') : text;
             clean = raw.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').replace(/\s+/g, ' ').trim();
+        }
+        if (clean && clean.includes('\\')) {
+            clean = decodeEscapedPreviewText(clean);
         }
         return clean;
     } catch { return ''; }

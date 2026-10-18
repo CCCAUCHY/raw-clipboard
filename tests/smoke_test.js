@@ -57,8 +57,49 @@ function detectCoreMime(mimeTypes) {
     }
 
     // 3. 复合类型与文本/HTML
-    const htmlCandidates = findRawCandidates(['text/html']);
-    const textCandidates = findRawCandidates(['text/plain', 'utf8_string', 'string', 'text']);
+    const getTextTier = (raw, base) => {
+        const lower = raw.trim().toLowerCase();
+        if (base === 'text/plain') {
+            if (lower.includes('charset=utf-8') || lower.includes('charset=utf8')) return 1;
+            if (lower === 'text/plain') return 3;
+            return 5;
+        }
+        if (base === 'utf8_string') return 2;
+        if (base === 'text') return 4;
+        if (base === 'string') return 6;
+        if (base.startsWith('text/') && base !== 'text/html' && base !== 'text/uri-list') return 7;
+        return 99;
+    };
+
+    const textEntries = entries
+        .map(e => ({ raw: e.raw, base: e.base, tier: getTextTier(e.raw, e.base) }))
+        .filter(e => e.tier < 99)
+        .sort((a, b) => a.tier - b.tier);
+
+    const textCandidates = [];
+    for (const item of textEntries) {
+        if (!textCandidates.includes(item.raw)) textCandidates.push(item.raw);
+    }
+
+    const getHtmlTier = (raw, base) => {
+        const lower = raw.trim().toLowerCase();
+        if (base === 'text/html') {
+            if (lower.includes('charset=utf-8') || lower.includes('charset=utf8')) return 1;
+            if (lower === 'text/html') return 2;
+            return 3;
+        }
+        return 99;
+    };
+
+    const htmlEntries = entries
+        .map(e => ({ raw: e.raw, base: e.base, tier: getHtmlTier(e.raw, e.base) }))
+        .filter(e => e.tier < 99)
+        .sort((a, b) => a.tier - b.tier);
+
+    const htmlCandidates = [];
+    for (const item of htmlEntries) {
+        if (!htmlCandidates.includes(item.raw)) htmlCandidates.push(item.raw);
+    }
 
     if (htmlCandidates.length > 0 && textCandidates.length > 0) {
         return {

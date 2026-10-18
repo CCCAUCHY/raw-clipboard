@@ -261,6 +261,7 @@ const {
     generatePreview,
     safeSlice,
     getTrailingIncompleteUtf8Bytes,
+    decodeEscapedPreviewText,
 } = extModule;
 
 // ============================================================================
@@ -5484,6 +5485,56 @@ await reporter.run('17.8 策略2渐进式低优先级分批解码缩略图测试
     ext._deleteEntry(0);
     // 验证 disable 清理一切任务
     ext.disable();
+});
+
+await reporter.run('17.9 文本候选流优先级深度测试 (显式 UTF-8 优先于裸文本与 Latin-1，杜绝转义序列降级)', async () => {
+    // 1. 经典浏览器/GTK应用反序提供格式：裸 text/plain 位于数组最前，显式 charset=utf-8 位于后部
+    const browserMimes = ['text/plain', 'text/plain;charset=utf-8', 'UTF8_STRING', 'STRING', 'TEXT'];
+    const detected = detectCoreMime(browserMimes);
+    assert(detected.type === 'text', '应识别为文本类型');
+    assert(detected.candidates[0] === 'text/plain;charset=utf-8', `第 1 候选流必须是显式 utf-8 纯文本，实际: ${detected.candidates[0]}`);
+    assert(detected.candidates[1] === 'UTF8_STRING', `第 2 候选流必须是 UTF8_STRING，实际: ${detected.candidates[1]}`);
+    assert(detected.candidates[2] === 'text/plain', `第 3 候选流必须是裸 text/plain，实际: ${detected.candidates[2]}`);
+    assert(detected.candidates[3] === 'TEXT', `第 4 候选流必须是 TEXT，实际: ${detected.candidates[3]}`);
+    assert(detected.candidates[4] === 'STRING', `第 5 候选流必须是 STRING (Latin-1 兜底)，实际: ${detected.candidates[4]}`);
+    assert(detected.sourceMime === 'text/plain;charset=utf-8', `首选 sourceMime 必须为 text/plain;charset=utf-8，实际: ${detected.sourceMime}`);
+
+    // 2. 复合类型场景反序提供格式
+    const compositeMimes = ['text/html', 'text/plain', 'text/plain;charset=utf-8', 'STRING'];
+    const compDetected = detectCoreMime(compositeMimes);
+    assert(compDetected.type === 'composite', '应识别为复合类型');
+    assert(compDetected.textCandidates[0] === 'text/plain;charset=utf-8', `复合类型文本首选流必须为 text/plain;charset=utf-8，实际: ${compDetected.textCandidates[0]}`);
+    assert(compDetected.textMime === 'text/plain;charset=utf-8', `复合类型 textMime 必须为 text/plain;charset=utf-8，实际: ${compDetected.textMime}`);
+
+    // 3. 仅提供 UTF8_STRING 与 STRING 时，UTF8_STRING 优先于 STRING
+    const x11Mimes = ['STRING', 'UTF8_STRING'];
+    const x11Detected = detectCoreMime(x11Mimes);
+    assert(x11Detected.type === 'text' && x11Detected.sourceMime === 'UTF8_STRING', `UTF8_STRING 必须优先于 STRING，实际: ${x11Detected.sourceMime}`);
+});
+
+await reporter.run('17.10 文本预览转义序列解码测试 (\\uXXXX 与 \\XX/\\xXX 字节级转义在预览中还原为可读中文字符，正常代码路径不受影响)', async () => {
+    // 1. Unicode 转义解码
+    assert(decodeEscapedPreviewText('\\u6545\\u4e8b') === '故事', 'Unicode \\u 转义必须解码为正常中文字符');
+    assert(decodeEscapedPreviewText('\\u4e2d\\u6587\\u6d4b\\u8bd5') === '中文测试', 'Unicode \\u 中文测试解码');
+
+    // 2. 十六进制字节级转义解码 (如 \\E6\\95\\85 为 UTF-8 "故")
+    assert(decodeEscapedPreviewText('\\E6\\95\\85\\E4\\BA\\8B') === '故事', '十六进制字节转义 \\E6\\95\\85\\E4\\BA\\8B 必须解码为 "故事"');
+    assert(decodeEscapedPreviewText('\\xE6\\x95\\x85\\xE4\\xBA\\x8B') === '故事', '带 x 前缀的 \\xE6\\x95\\x85\\xE4\\xBA\\x8B 必须解码为 "故事"');
+
+    // 3. 正常反斜杠与代码路径不受误伤
+    assert(decodeEscapedPreviewText('C:\\path\\to\\file') === 'C:\\path\\to\\file', '文件路径反斜杠绝不被误解码');
+    assert(decodeEscapedPreviewText('\\alpha + \\beta') === '\\alpha + \\beta', 'LaTeX 语法反斜杠绝不被误解码');
+    assert(decodeEscapedPreviewText('hello\\nworld') === 'hello\\nworld', '普通转义符绝不被误解码');
+
+    // 4. extractTextPreview 真实 GBytes 解码集成测试
+    const enc = new TextEncoder();
+    const gBytesEscaped = new GLib.Bytes(enc.encode('\\E6\\95\\85\\E4\\BA\\8B'));
+    const preview1 = extractTextPreview(gBytesEscaped, false);
+    assert(preview1 === '故事', `extractTextPreview 必须自动解码转义序列，实际: '${preview1}'`);
+
+    const gBytesUnicode = new GLib.Bytes(enc.encode('标题: \\u6545\\u4e8b'));
+    const preview2 = extractTextPreview(gBytesUnicode, false);
+    assert(preview2 === '标题: 故事', `extractTextPreview Unicode 转义解码，实际: '${preview2}'`);
 });
 
 // ============================================================================
