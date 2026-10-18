@@ -261,7 +261,6 @@ const {
     generatePreview,
     safeSlice,
     getTrailingIncompleteUtf8Bytes,
-    decodeEscapedPreviewText,
 } = extModule;
 
 // ============================================================================
@@ -5512,29 +5511,12 @@ await reporter.run('17.9 文本候选流优先级深度测试 (显式 UTF-8 优�
     assert(x11Detected.type === 'text' && x11Detected.sourceMime === 'UTF8_STRING', `UTF8_STRING 必须优先于 STRING，实际: ${x11Detected.sourceMime}`);
 });
 
-await reporter.run('17.10 文本预览转义序列解码测试 (\\uXXXX 与 \\XX/\\xXX 字节级转义在预览中还原为可读中文字符，正常代码路径不受影响)', async () => {
-    // 1. Unicode 转义解码
-    assert(decodeEscapedPreviewText('\\u6545\\u4e8b') === '故事', 'Unicode \\u 转义必须解码为正常中文字符');
-    assert(decodeEscapedPreviewText('\\u4e2d\\u6587\\u6d4b\\u8bd5') === '中文测试', 'Unicode \\u 中文测试解码');
-
-    // 2. 十六进制字节级转义解码 (如 \\E6\\95\\85 为 UTF-8 "故")
-    assert(decodeEscapedPreviewText('\\E6\\95\\85\\E4\\BA\\8B') === '故事', '十六进制字节转义 \\E6\\95\\85\\E4\\BA\\8B 必须解码为 "故事"');
-    assert(decodeEscapedPreviewText('\\xE6\\x95\\x85\\xE4\\xBA\\x8B') === '故事', '带 x 前缀的 \\xE6\\x95\\x85\\xE4\\xBA\\x8B 必须解码为 "故事"');
-
-    // 3. 正常反斜杠与代码路径不受误伤
-    assert(decodeEscapedPreviewText('C:\\path\\to\\file') === 'C:\\path\\to\\file', '文件路径反斜杠绝不被误解码');
-    assert(decodeEscapedPreviewText('\\alpha + \\beta') === '\\alpha + \\beta', 'LaTeX 语法反斜杠绝不被误解码');
-    assert(decodeEscapedPreviewText('hello\\nworld') === 'hello\\nworld', '普通转义符绝不被误解码');
-
-    // 4. extractTextPreview 真实 GBytes 解码集成测试
+await reporter.run('17.10 纯原样真实文本预览提取测试 (严格原样保留真实内容，绝不对反斜杠进行人工篡改或伪解码)', async () => {
     const enc = new TextEncoder();
-    const gBytesEscaped = new GLib.Bytes(enc.encode('\\E6\\95\\85\\E4\\BA\\8B'));
-    const preview1 = extractTextPreview(gBytesEscaped, false);
-    assert(preview1 === '故事', `extractTextPreview 必须自动解码转义序列，实际: '${preview1}'`);
-
-    const gBytesUnicode = new GLib.Bytes(enc.encode('标题: \\u6545\\u4e8b'));
-    const preview2 = extractTextPreview(gBytesUnicode, false);
-    assert(preview2 === '标题: 故事', `extractTextPreview Unicode 转义解码，实际: '${preview2}'`);
+    const rawText = '真实原始文本，含文件路径 C:\\Windows\\System32 与原始符号 \\u6545';
+    const gBytes = new GLib.Bytes(enc.encode(rawText));
+    const preview = extractTextPreview(gBytes, false);
+    assert(preview === rawText, `extractTextPreview 必须 100% 忠实还原原始内容，不得做任何人工转义清洗，实际: '${preview}'`);
 });
 
 // ============================================================================

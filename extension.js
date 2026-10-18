@@ -644,44 +644,6 @@ export function getTrailingIncompleteUtf8Bytes(data) {
     return 0;
 }
 
-export function decodeEscapedPreviewText(str) {
-    if (!str || typeof str !== 'string' || !str.includes('\\')) return str;
-
-    let res = str;
-
-    // 1. Unicode 转义序列解码: \uXXXX (如 \u6545\u4e8b -> 故事)
-    if (/\\u[0-9a-fA-F]{4}/i.test(res)) {
-        res = res.replace(/\\u([0-9a-fA-F]{4})/gi, (_, hex) => {
-            try {
-                return String.fromCharCode(parseInt(hex, 16));
-            } catch {
-                return _;
-            }
-        });
-    }
-
-    // 2. 字节级十六进制转义序列解码: \E6\95\85 或 \xE6\x95\x85 (如 \E6\95\85\E4\BA\8B -> 故事)
-    if (/\\(?:x|X)?[0-9a-fA-F]{2}/i.test(res)) {
-        res = res.replace(/(?:\\(?:x|X)?([0-9a-fA-F]{2}))+/gi, (match) => {
-            const hexPairs = [];
-            const regex = /\\(?:x|X)?([0-9a-fA-F]{2})/gi;
-            let m;
-            while ((m = regex.exec(match)) !== null) {
-                hexPairs.push(parseInt(m[1], 16));
-            }
-            try {
-                const u8 = new Uint8Array(hexPairs);
-                const decoded = Utf8Decoder.decode(u8);
-                return (decoded && !decoded.includes('\uFFFD')) ? decoded : match;
-            } catch {
-                return match;
-            }
-        });
-    }
-
-    return res;
-}
-
 export function extractTextPreview(gBytes, isHtml = false) {
     if (!gBytes || gBytes.get_size() === 0) return '';
     try {
@@ -716,9 +678,6 @@ export function extractTextPreview(gBytes, isHtml = false) {
             text += Utf8Decoder.decode(carry);
             const raw = isHtml ? text.replace(/<[^>]+>/g, ' ') : text;
             clean = raw.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '').replace(/\s+/g, ' ').trim();
-        }
-        if (clean && clean.includes('\\')) {
-            clean = decodeEscapedPreviewText(clean);
         }
         return clean;
     } catch { return ''; }
