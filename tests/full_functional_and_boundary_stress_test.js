@@ -1329,11 +1329,11 @@ await reporter.run('6.6 目录与文件统一 folder-symbolic 图标与“文件
     assert(item.iconName === 'folder-symbolic', `单目录图标实际: ${item.iconName}`);
 
     // 2. 复制无尾部斜杠路径
-    const noSlashUri = 'copy\nfile:///home/vmuser/tmpfs/raw-clipboard\n';
+    const noSlashUri = 'copy\nfile:///home/user/generic_folder_no_slash\n';
     await ext._onClipboardOwnerChanged(null, Meta.SelectionType.SELECTION_CLIPBOARD,
         new MockSelectionSource(['text/uri-list'], new TextEncoder().encode(noSlashUri)));
     item = getExtItem(ext, 0);
-    assert(item.title === 'raw-clipboard', `无斜杠文件名实际: ${item.title}`);
+    assert(item.title === 'generic_folder_no_slash', `无斜杠文件名实际: ${item.title}`);
     assert(item.subtitle.includes('文件/目录 · 1 项'), `无斜杠副标题实际: ${item.subtitle}`);
     assert(item.iconName === 'folder-symbolic', `无斜杠文件图标统一为 folder-symbolic，实际: ${item.iconName}`);
 
